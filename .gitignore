@@ -1,0 +1,12 @@
+# Archivos de caché de Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Base de datos local de SQLite
+*.db
+water_management.db
+
+# Archivos de configuración del entorno de desarrollo (VS Code, PyCharm, etc.)
+.vscode/
+.idea/
