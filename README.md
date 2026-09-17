@@ -13,26 +13,37 @@ Sistema distribuido de monitoreo y gestión de estaciones de agua en tiempo real
 
 ---
 
-
 ### 1. Iniciar CENTRAL
 Sintaxis:
+```bash
 python WM_Central.py <puerto_escucha>
+```
 
 Ejemplo:
+```bash
 python WM_Central.py 5000
+```
 
 ### 2. Iniciar MONITOR
 Sintaxis:
+```bash
 python WM_WS_M.py <puerto_escucha_engine> <ip_central> <puerto_central> <ws_id>
+```
 
 Ejemplo:
+```bash
 python WM_WS_M.py 6000 localhost 5000 WS_01
+```
 
 ### 3. Iniciar ENGINE
 Sintaxis:
+```bash
 python WM_WS_E.py <ip_monitor> <puerto_monitor>
+```
 
 Ejemplo:
+```bash
 python WM_WS_E.py localhost 6000
+```
 
 ---
