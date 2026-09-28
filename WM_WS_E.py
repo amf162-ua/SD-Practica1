@@ -7,6 +7,7 @@ from protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
 FORMAT = 'utf-8'
 estado_salud = "OK"
 
+
 def responder_ping(sock):
     global estado_salud
     try:
@@ -15,7 +16,7 @@ def responder_ping(sock):
             if not trama:
                 break
             
-            # El Monitor inicia con ENQ
+            # Atender protocolo ENQ / ACK
             if trama == ENQ:
                 sock.send(ACK)
                 continue
@@ -31,17 +32,18 @@ def responder_ping(sock):
                 sock.send(ACK)
             
             if mensaje == "PING":
-                # Enviar estado actual empaquetado (OK o KO)
+                # Enviar estado de salud actual empaquetado (OK o KO)
                 respuesta = empaquetar(estado_salud)
                 sock.send(respuesta)
                 
-                # Esperar el ACK del Monitor confirmando recepción
+                # Esperar el ACK final del Monitor
                 ack_recibido = sock.recv(1024)
                 if ack_recibido != ACK:
                     print("[ENGINE] Advertencia: Monitor no confirmó la recepción del estado.")
                     
     except Exception:
-        pass # La reconexión se gestiona en el bucle principal
+        pass # La reconexión se maneja en el bucle principal
+
 
 def iniciar_engine(ip_monitor, puerto_monitor):
     global estado_salud
@@ -60,7 +62,7 @@ def iniciar_engine(ip_monitor, puerto_monitor):
             except EOFError:
                 break
 
-    # Hilo en segundo plano para escuchar el teclado sin bloquear los sockets
+    # Hilo en segundo plano para cambiar estado vía consola
     threading.Thread(target=leer_teclado, daemon=True).start()
 
     print("\n=== ENGINE ACTIVADO ===")
@@ -85,13 +87,12 @@ def iniciar_engine(ip_monitor, puerto_monitor):
             sock.close()
             time.sleep(3)
 
+
 if __name__ == "__main__":
-    # Verificación de parámetros según la especificación del sistema
     if len(sys.argv) < 5:
         print("Uso: python WM_WS_E.py <ip_broker_kafka> <puerto_broker> <ip_monitor> <puerto_monitor>")
         sys.exit(1)
 
-    # Parámetros exigidos por la especificación (preparados para la futura fase de eventos)
     ip_kafka = sys.argv[1]
     puerto_kafka = sys.argv[2]
     ip_monitor = sys.argv[3]

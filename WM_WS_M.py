@@ -10,6 +10,12 @@ FORMAT = 'utf-8'
 sock_central_global = None
 lock_central = threading.Lock()
 
+# Estado global del Monitor respecto a la Engine
+# Valores posibles: "AVERIA" (Sin Engine), "OK" (Engine OK), "KO" (Engine KO / Fuga)
+estado_actual_monitor = "AVERIA"
+engine_conectado = False
+
+
 def enviar_a_central(mensaje_str):
     """Función auxiliar para enviar tramas a la Central siguiendo el protocolo."""
     global sock_central_global
@@ -42,8 +48,11 @@ def enviar_a_central(mensaje_str):
             print(f"[ERROR MONITOR] Fallo al comunicar con Central: {e}")
             return None
 
+
 def mantener_conexion_central(ip_central, puerto_central, ws_id):
-    global sock_central_global
+    """Mantiene el socket hacia la Central y envía el estado actual periódicamente."""
+    global sock_central_global, estado_actual_monitor, engine_conectado
+
     while True:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -53,24 +62,30 @@ def mantener_conexion_central(ip_central, puerto_central, ws_id):
             with lock_central:
                 sock_central_global = sock
             
-            # Proceso de autenticación inicial
-            respuesta = enviar_a_central(f"AUTH#{ws_id}")
+            # Autenticación inicial con estado 'AVERIA' si no hay Engine conectado
+            estado_inicial = estado_actual_monitor
+            respuesta = enviar_a_central(f"AUTH#{ws_id}#{estado_inicial}")
             if respuesta:
-                print(f"[MONITOR <- CENTRAL] {respuesta}")
+                print(f"[MONITOR <- CENTRAL] Autenticado: {respuesta}")
             
-            # Bucle para mantener la conexión viva y detectar caídas de la Central
+            # Bucle continuo para reportar cambios de estado a la Central
+            ultimo_estado_enviado = None
+
             while True:
-                # Usamos un timeout largo solo para detectar si el socket se rompe
-                sock.settimeout(5.0)
-                try:
-                    data = sock.recv(1024)
-                    if not data:
-                        break
-                except socket.timeout:
-                    continue
-                except socket.error:
-                    break
-                    
+                # Si no hay Engine, nos aseguramos de que el estado sea 'AVERIA'
+                if not engine_conectado:
+                    estado_actual_monitor = "AVERIA"
+
+                # Si cambia el estado o de forma periódica, notificamos a Central
+                if estado_actual_monitor != ultimo_estado_enviado:
+                    msg = f"STATUS#{ws_id}#{estado_actual_monitor}#0.0"
+                    res = enviar_a_central(msg)
+                    if res:
+                        ultimo_estado_enviado = estado_actual_monitor
+                        print(f"[MONITOR -> CENTRAL] Estado actualizado a: {estado_actual_monitor}")
+
+                time.sleep(1)
+
         except (socket.error, ConnectionRefusedError):
             print("[MONITOR] CENTRAL no disponible. Reintentando en 3 segundos...")
         finally:
@@ -79,7 +94,11 @@ def mantener_conexion_central(ip_central, puerto_central, ws_id):
             sock.close()
             time.sleep(3)
 
+
 def escuchar_engine(puerto_local, ws_id):
+    """Servidor local para aceptar la conexión del Engine."""
+    global estado_actual_monitor, engine_conectado
+
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(('0.0.0.0', puerto_local))
@@ -92,13 +111,14 @@ def escuchar_engine(puerto_local, ws_id):
         try:
             conn_engine, addr = server.accept()
             conn_engine.settimeout(None)
+            engine_conectado = True
             print(f"\n[MONITOR] Engine conectado desde {addr}")
 
             try:
                 while True:
                     time.sleep(1)
                     
-                    # Protocolo PING a Engine (Monitor inicia como Cliente)
+                    # Protocolo PING a Engine
                     conn_engine.send(ENQ)
                     if conn_engine.recv(1024) == ACK:
                         conn_engine.send(empaquetar("PING"))
@@ -109,22 +129,22 @@ def escuchar_engine(puerto_local, ws_id):
                             
                             if valido:
                                 conn_engine.send(ACK)
-                                print(f"[MONITOR -> ENGINE] Salud: {respuesta}")
-                                
-                                if respuesta == "KO":
-                                    print("[ALERT MONITOR] ¡Avería reportada por Engine! Notificando a Central...")
-                                    # El Monitor reporta la fuga a la Central automáticamente
-                                    enviar_a_central(f"LEAK#{ws_id}")
+                                # Actualizar estado del Monitor según respuesta del Engine
+                                estado_actual_monitor = respuesta  # "OK" o "KO"
+                                print(f"[MONITOR <- ENGINE] Estado de salud: {respuesta}")
                             else:
                                 conn_engine.send(NACK)
-                                
+
             except (socket.error, ConnectionResetError):
-                print("[MONITOR] Conexión perdida con el Engine. Esperando reconexión...")
+                print("[MONITOR] Conexión perdida con el Engine.")
             finally:
+                engine_conectado = False
+                estado_actual_monitor = "AVERIA"
                 conn_engine.close()
 
         except socket.timeout:
             continue
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 5:
@@ -137,7 +157,7 @@ if __name__ == "__main__":
     ws_id = sys.argv[4]
 
     try:
-        # Hilo persistente para Central
+        # Hilo persistente para comunicación con Central
         hilo_central = threading.Thread(
             target=mantener_conexion_central, 
             args=(ip_central, puerto_central, ws_id), 
@@ -145,7 +165,7 @@ if __name__ == "__main__":
         )
         hilo_central.start()
         
-        # Bucle principal para Engine
+        # Bucle principal escuchando al Engine
         escuchar_engine(puerto_local, ws_id)
         
     except KeyboardInterrupt:
