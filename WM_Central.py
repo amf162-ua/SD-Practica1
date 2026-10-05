@@ -190,6 +190,11 @@ class DashboardCentral:
             text=f"Total: {total}  |  Activas (OK/Regando): {ok}  |  Incidencias/Avería: {ko}  |  Desconectadas: {desconectadas}"
         )
 
+def deserializar_json(mensaje_bytes):
+    """Convierte los bytes recibidos de Kafka en un diccionario JSON."""
+    if mensaje_bytes is None:
+        return None
+    return json.loads(mensaje_bytes.decode('utf-8'))
 
 def log_central(texto):
     print(texto)
@@ -211,7 +216,7 @@ def iniciar_consumidor_kafka(bootstrap_server):
                 'wm-orders-request',
                 'wm-telemetry',
                 bootstrap_servers=bootstrap_server,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                value_deserializer=deserializar_json,
                 group_id='central-group',
                 auto_offset_reset='latest'
             )

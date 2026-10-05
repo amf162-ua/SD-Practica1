@@ -10,6 +10,11 @@ FORMAT = 'utf-8'
 estado_salud = "OK"
 regando = False
 
+def deserializar_json(mensaje_bytes):
+    """Convierte los bytes recibidos de Kafka en un diccionario JSON sin avisos de deprecación."""
+    if mensaje_bytes is None:
+        return None
+    return json.loads(mensaje_bytes.decode('utf-8'))
 
 def responder_ping_monitor(sock):
     """Mantiene el canal de presencia e incidencias locales con el Monitor por Sockets."""
@@ -95,7 +100,7 @@ def escuchar_ordenes_kafka(bootstrap_server, ws_id):
             consumer = KafkaConsumer(
                 'wm-orders-response',
                 bootstrap_servers=bootstrap_server,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                value_deserializer=deserializar_json,
                 group_id=f'engine-group-{ws_id}',
                 auto_offset_reset='latest'
             )

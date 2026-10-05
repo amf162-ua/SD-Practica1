@@ -34,15 +34,10 @@ services:
       - |
         echo "[INIT-KAFKA] Esperando a que el broker levante..."
         sleep 5
-        echo "[INIT-KAFKA] Creando tópicos del sistema WaterManagement..."
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-orders-request --partitions 3 --replication-factor 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-orders-response --partitions 3 --replication-factor 1
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-telemetry --partitions 3 --replication-factor 1 --config retention.ms=43200000
+        echo "[INIT-KAFKA] Creando tópicos del sistema WaterManagement (1 partición)..."
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-orders-request --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-orders-response --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-telemetry --partitions 1 --replication-factor 1 --config retention.ms=43200000
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-alerts-events --partitions 1 --replication-factor 1
         echo "[INIT-KAFKA] Tópicos creados correctamente:"
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --list
-
-  mongo:
-    image: mongo:latest
-    ports:
-      - 27017:27017
