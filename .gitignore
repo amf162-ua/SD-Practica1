@@ -6,7 +6,18 @@ __pycache__/
 # Base de datos local de SQLite
 *.db
 water_management.db
+*.sqlite3
 
 # Archivos de configuración del entorno de desarrollo (VS Code, PyCharm, etc.)
 .vscode/
 .idea/
+
+# Entorno virtual de Python
+.venv/
+venv/
+ENV/
+env/
+
+# Archivos de entorno y credenciales
+.env
+*.env
