@@ -1,8 +1,11 @@
 import socket
 import sys
 import threading
+import json
+import time
 import tkinter as tk
 from tkinter import ttk
+from kafka import KafkaConsumer, KafkaProducer
 from protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
 from database import init_db, obtener_estaciones, guardar_o_actualizar_estacion
 
@@ -10,6 +13,7 @@ FORMAT = 'utf-8'
 
 # Instancia global del panel de control
 dashboard = None
+
 
 class DashboardCentral:
     def __init__(self, root):
@@ -21,13 +25,13 @@ class DashboardCentral:
         self.colores_estado = {
             "OK": "#2ecc71",             # Verde (Funcionamiento Normal)
             "CONECTADA": "#2ecc71",      # Verde (Estado equivalente)
-            "REGANDO": "#27ae60",        # Verde Oscuro
-            "KO": "#e74c3c",             # Rojo (Error de Engine / Fallo)
+            "REGANDO": "#27ae60",        # Verde Oscuro (Riego activo)
+            "KO": "#e74c3c",             # Rojo (Fallo)
             "FUGA": "#e74c3c",           # Rojo (Fuga detectada)
-            "AVERIA": "#e67e22",         # Naranja (Monitor encendido sin Engine)
-            "AVERIADO": "#e67e22",       # Naranja (Variantes de nombre)
-            "FUERA_SERVICIO": "#e67e22", # Naranja
-            "DESCONECTADA": "#95a5a6"    # Gris (Sin comunicación socket)
+            "AVERIA": "#e67e22",         # Naranja (Sin Engine)
+            "AVERIADO": "#e67e22",       # Naranja
+            "FUERA_SERVICIO": "#e67e22", # Naranja (Parada por Central)
+            "DESCONECTADA": "#95a5a6"    # Gris (Sin socket)
         }
 
         self._crear_interfaz()
@@ -68,7 +72,6 @@ class DashboardCentral:
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar_tree.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Configurar colores según el estado
         for estado, color in self.colores_estado.items():
             self.tree.tag_configure(estado, background=color, foreground="white")
 
@@ -88,7 +91,7 @@ class DashboardCentral:
         btn_alta.grid(row=0, column=4, padx=10, pady=2)
 
         # 4. Terminal / Consola
-        frame_console = ttk.LabelFrame(self.root, text=" Registro de Eventos y Tramas Sockets (Terminal) ", padding=5)
+        frame_console = ttk.LabelFrame(self.root, text=" Registro de Eventos (Sockets & Kafka) ", padding=5)
         frame_console.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         self.txt_console = tk.Text(
@@ -111,7 +114,7 @@ class DashboardCentral:
         # 5. Barra de Estado
         self.lbl_resumen = tk.Label(
             self.root, 
-            text="Total: 0 | Activas (OK): 0 | Incidencias/KO/Avería: 0 | Desconectadas: 0", 
+            text="Total: 0 | Activas (OK/Regando): 0 | Incidencias/Avería: 0 | Desconectadas: 0", 
             bd=1, 
             relief=tk.SUNKEN, 
             anchor=tk.W, 
@@ -155,7 +158,6 @@ class DashboardCentral:
             self.entry_ubicacion.delete(0, tk.END)
 
     def actualizar_estacion(self, ws_id, estado, ubicacion="Parque Central", caudal="0.0"):
-        """Actualiza el árbol en la UI de forma Thread-Safe."""
         def _update():
             if self.tree.exists(ws_id):
                 val_actuales = self.tree.item(ws_id, "values")
@@ -185,7 +187,7 @@ class DashboardCentral:
                     desconectadas += 1
 
         self.lbl_resumen.config(
-            text=f"Total: {total}  |  Activas (OK): {ok}  |  Incidencias/Avería: {ko}  |  Desconectadas: {desconectadas}"
+            text=f"Total: {total}  |  Activas (OK/Regando): {ok}  |  Incidencias/Avería: {ko}  |  Desconectadas: {desconectadas}"
         )
 
 
@@ -194,6 +196,81 @@ def log_central(texto):
     if dashboard:
         dashboard.log(texto)
 
+
+# --- SUBSISTEMA KAFKA EN CENTRAL ---
+
+def iniciar_consumidor_kafka(bootstrap_server):
+    """Hilo continuo que escucha órdenes y telemetría provenientes de Kafka."""
+    log_central(f"[KAFKA] Conectando al broker en {bootstrap_server}...")
+    
+    consumer = None
+    producer = None
+    while consumer is None:
+        try:
+            consumer = KafkaConsumer(
+                'wm-orders-request',
+                'wm-telemetry',
+                bootstrap_servers=bootstrap_server,
+                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                group_id='central-group',
+                auto_offset_reset='latest'
+            )
+            producer = KafkaProducer(
+                bootstrap_servers=bootstrap_server,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8')
+            )
+            log_central("[KAFKA] Conectado exitosamente a Kafka.")
+        except Exception:
+            time.sleep(3)
+
+    for msg in consumer:
+        topico = msg.topic
+        datos = msg.value
+
+        # 1. Solicitud Riego de Operario
+        if topico == 'wm-orders-request':
+            order_id = datos.get("order_id")
+            ws_id = datos.get("ws_id")
+            operator_id = datos.get("operator_id")
+            
+            log_central(f"[KAFKA] Solicitud de riego de {operator_id} para la estación {ws_id}")
+
+            estaciones = obtener_estaciones()
+            estado_actual = "DESCONECTADA"
+            for est in estaciones:
+                if est[0] == ws_id:
+                    estado_actual = est[2] if len(est) > 2 else "DESCONECTADA"
+
+            if estado_actual in ["OK", "CONECTADA"]:
+                autorizado = True
+                razon = "Estación disponible"
+                guardar_o_actualizar_estacion(ws_id, estado="REGANDO")
+                if dashboard:
+                    dashboard.actualizar_estacion(ws_id, "REGANDO")
+            else:
+                autorizado = False
+                razon = f"Estación no disponible (Estado actual: {estado_actual})"
+
+            respuesta = {
+                "order_id": order_id,
+                "ws_id": ws_id,
+                "operator_id": operator_id,
+                "status": "AUTHORIZED" if autorizado else "DENIED",
+                "reason": razon
+            }
+            producer.send('wm-orders-response', key=ws_id.encode('utf-8'), value=respuesta)
+            log_central(f"[KAFKA] Respuesta enviada para {ws_id}: {respuesta['status']}")
+
+        # 2. Telemetría del Engine en tiempo real
+        elif topico == 'wm-telemetry':
+            ws_id = datos.get("ws_id")
+            caudal = str(datos.get("flow_rate_lmin", "0.0"))
+            
+            if dashboard:
+                dashboard.actualizar_estacion(ws_id, "REGANDO", caudal=caudal)
+
+
+# --- SUBSISTEMA SOCKETS (PRESENCIA HARDWARE MONITORES) ---
 
 def atender_monitor(conn, addr):
     log_central(f"[NUEVA CONEXIÓN] Monitor conectado desde {addr}")
@@ -207,59 +284,43 @@ def atender_monitor(conn, addr):
             if trama == ENQ:
                 conn.send(ACK)
                 continue
-                
             if trama == EOT:
                 break
 
             mensaje, valido = desempaquetar(trama)
-            
             if not valido:
                 conn.send(NACK)
-                log_central(f"[RECEPTOR CENTRAL] Trama corrupta recibida de {addr}")
                 continue
             else:
                 conn.send(ACK)
 
-            log_central(f"[RECEPTOR CENTRAL] Recibido válido de {addr}: {mensaje}")
+            log_central(f"[SOCKETS] Mensaje de {addr}: {mensaje}")
             
-            # --- MANEJO DE MENSAJES SEGÚN EL FLUJO ---
-            
-            # 1. Autenticación (Cuando se conecta el Monitor a Central)
             if mensaje.startswith("AUTH#"):
                 partes = mensaje.split("#")
                 ws_id = partes[1]
-                # Si el mensaje incluye estado inicial (ej. AUTH#WS1#AVERIA), lo toma
                 estado_inicial = partes[2] if len(partes) > 2 else "AVERIA"
                 
                 guardar_o_actualizar_estacion(ws_id, ubicacion="Parque Central", estado=estado_inicial)
                 if dashboard:
                     dashboard.actualizar_estacion(ws_id, estado_inicial)
 
-                respuesta = empaquetar("OK#AUTENTICADO")
-                conn.send(respuesta)
-                conn.recv(1024) # Recibir ACK final de confirmación
+                conn.send(empaquetar("OK#AUTENTICADO"))
+                conn.recv(1024)
                 
-            # 2. Actualización de estado periódico (OK, KO, AVERIA)
             elif mensaje.startswith("STATUS#") or mensaje.startswith("STATE#"):
                 partes = mensaje.split("#")
-                # Formato esperado: STATUS#<WS_ID>#<ESTADO>#<CAUDAL>
                 ws_id = partes[1]
                 nuevo_estado = partes[2]
                 caudal = partes[3] if len(partes) > 3 else "0.0"
 
-                # Guardado en Base de Datos
                 guardar_o_actualizar_estacion(ws_id, estado=nuevo_estado)
-                
-                # Actualización en la UI
                 if dashboard:
                     dashboard.actualizar_estacion(ws_id, estado=nuevo_estado, caudal=caudal)
                 
-                # Respuesta a Monitor
-                respuesta = empaquetar("OK#ESTADO_RECIBIDO")
-                conn.send(respuesta)
+                conn.send(empaquetar("OK#ESTADO_RECIBIDO"))
                 conn.recv(1024)
 
-            # 3. Notificación explícita de Fuga
             elif mensaje.startswith("LEAK#"):
                 partes = mensaje.split("#")
                 ws_id = partes[1]
@@ -268,22 +329,18 @@ def atender_monitor(conn, addr):
                 if dashboard:
                     dashboard.actualizar_estacion(ws_id, "FUGA")
 
-                log_central(f"[CENTRAL] ¡ALERTA! Fuga registrada en la estación {ws_id}")
-                
-                respuesta = empaquetar("OK#FUGA_REGISTRADA")
-                conn.send(respuesta)
+                log_central(f"[SOCKETS] ¡ALERTA! Fuga registrada en la estación {ws_id}")
+                conn.send(empaquetar("OK#FUGA_REGISTRADA"))
                 conn.recv(1024)
 
     except Exception as e:
-        log_central(f"[ERROR CLIENTE] {addr}: {e}")
+        log_central(f"[ERROR SOCKET] {addr}: {e}")
     finally:
         if ws_id:
-            # Al desconectarse el socket del Monitor, pasa a DESCONECTADA
             guardar_o_actualizar_estacion(ws_id, estado="DESCONECTADA")
             if dashboard:
                 dashboard.actualizar_estacion(ws_id, "DESCONECTADA")
         conn.close()
-        log_central(f"[CONEXIÓN CERRADA] Monitor {addr}")
 
 
 def iniciar_servidor_sockets(puerto):
@@ -311,19 +368,33 @@ def iniciar_servidor_sockets(puerto):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Uso: python WM_Central.py <puerto_escucha> [<ip_kafka> <puerto_kafka>]")
+        print("Uso: python WM_Central.py <puerto_sockets> [<ip_kafka> <puerto_kafka>]")
         sys.exit(1)
         
     puerto_escucha = int(sys.argv[1])
+    ip_kafka = sys.argv[2] if len(sys.argv) > 2 else "localhost"
+    puerto_kafka = sys.argv[3] if len(sys.argv) > 3 else "9092"
+    bootstrap_kafka = f"{ip_kafka}:{puerto_kafka}"
+
     init_db()
 
-    hilo_servidor = threading.Thread(
+    # 1. Hilo Servidor de Sockets
+    hilo_sockets = threading.Thread(
         target=iniciar_servidor_sockets, 
         args=(puerto_escucha,), 
         daemon=True
     )
-    hilo_servidor.start()
+    hilo_sockets.start()
 
+    # 2. Hilo Consumidor/Productor Kafka
+    hilo_kafka = threading.Thread(
+        target=iniciar_consumidor_kafka, 
+        args=(bootstrap_kafka,), 
+        daemon=True
+    )
+    hilo_kafka.start()
+
+    # 3. GUI Principal Tkinter
     root = tk.Tk()
     dashboard = DashboardCentral(root)
     

@@ -22,6 +22,26 @@ services:
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
       CLUSTER_ID: "gTBb85_WRXu6oQgq-brTQw"
 
+  # Contenedor para la creación automática e independiente de tópicos
+  init-kafka:
+    image: apache/kafka:latest
+    container_name: init-kafka
+    depends_on:
+      - broker
+    command:
+      - /bin/sh
+      - -c
+      - |
+        echo "[INIT-KAFKA] Esperando a que el broker levante..."
+        sleep 5
+        echo "[INIT-KAFKA] Creando tópicos del sistema WaterManagement..."
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-orders-request --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-orders-response --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-telemetry --partitions 3 --replication-factor 1 --config retention.ms=43200000
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic wm-alerts-events --partitions 1 --replication-factor 1
+        echo "[INIT-KAFKA] Tópicos creados correctamente:"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --list
+
   mongo:
     image: mongo:latest
     ports:
