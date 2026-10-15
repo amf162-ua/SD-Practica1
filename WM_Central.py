@@ -276,6 +276,39 @@ def iniciar_consumidor_kafka(bootstrap_server):
             
             if dashboard:
                 dashboard.actualizar_estacion(ws_id, "REGANDO", caudal=caudal)
+        
+        # 3. Evento y Fin de Riego
+        elif topico == 'wm-alerts-events':
+            evento = datos.get("event")
+            if evento == "WATERING_FINISHED":
+                ws_id = datos.get("ws_id")
+                operador = datos.get("operator_id")
+                motivo = datos.get("status")
+                duracion = datos.get("duration_seconds", 0)
+                volumen = datos.get("total_volume_l", 0.0)
+            
+                log_central(
+                    f"[KAFKA] Fin de riego en {ws_id} (Operador: {operador}) -> "
+                    f"Motivo: {motivo} | Duración: {duracion}s | Consumo: {volumen} L"
+                )
+
+                # Si terminó normalmente o por stop manual, volvemos a reposo (OK y caudal 0.0)
+                if motivo != "ABORTED_LEAK":
+                    guardar_o_actualizar_estacion(ws_id, estado="OK")
+                    if dashboard:
+                        dashboard.actualizar_estacion(ws_id, "OK", caudal="0.0")
+                
+                # Notificar resumen final del riego al operario
+                resumen_operario = {
+                    "event": "WATERING_SUMMARY",
+                    "ws_id": ws_id,
+                    "operator_id": operador,
+                    "status": motivo,
+                    "duration_seconds": duracion,
+                    "total_volume_l": volumen
+                }
+                producer.send('wm-orders-response', key=ws_id.encode('utf-8'), value=resumen_operario)           
+
 
 
 # --- SUBSISTEMA SOCKETS (PRESENCIA HARDWARE MONITORES) ---
