@@ -141,7 +141,8 @@ class DashboardCentral:
             for est in estaciones:
                 est_id = est[0]
                 ubicacion = est[1]
-                estado = est[2] if len(est) > 2 else "DESCONECTADA"
+                # Según el Punto 1 del PDF, hasta que no conecte el Monitor, se muestra como DESCONECTADA
+                estado = "DESCONECTADA"
                 self.tree.insert("", tk.END, iid=est_id, values=(est_id, ubicacion, estado, "0.0"), tags=(estado,))
         
         self.actualizar_contadores()
@@ -274,8 +275,11 @@ def iniciar_consumidor_kafka(bootstrap_server):
             ws_id = datos.get("ws_id")
             caudal = str(datos.get("flow_rate_lmin", "0.0"))
             
-            if dashboard:
-                dashboard.actualizar_estacion(ws_id, "REGANDO", caudal=caudal)
+            # Solo actualizamos a REGANDO si el monitor sigue conectado (no está DESCONECTADA)
+            if dashboard and dashboard.tree.exists(ws_id):
+                tags = dashboard.tree.item(ws_id, "tags")
+                if tags and tags[0] != "DESCONECTADA":
+                    dashboard.actualizar_estacion(ws_id, "REGANDO", caudal=caudal)
         
         # 3. Evento y Fin de Riego
         elif topico == 'wm-alerts-events':
@@ -292,8 +296,22 @@ def iniciar_consumidor_kafka(bootstrap_server):
                     f"Motivo: {motivo} | Duración: {duracion}s | Consumo: {volumen} L"
                 )
 
-                # Si terminó normalmente o por stop manual, volvemos a reposo (OK y caudal 0.0)
-                if motivo != "ABORTED_LEAK":
+                # Consultamos el estado actual antes de cambiarlo
+                estaciones = obtener_estaciones()
+                estado_actual = "DESCONECTADA"
+                for est in estaciones:
+                    if est[0] == ws_id:
+                        estado_actual = est[2] if len(est) > 2 else "DESCONECTADA"
+
+                # Si la estación se quedó DESCONECTADA mientras regaba (monitor caído), se queda como DESCONECTADA
+                if estado_actual == "DESCONECTADA":
+                    if dashboard:
+                        dashboard.actualizar_estacion(ws_id, "DESCONECTADA", caudal="0.0")
+                elif motivo == "ABORTED_LEAK":
+                    guardar_o_actualizar_estacion(ws_id, estado="FUGA")
+                    if dashboard:
+                        dashboard.actualizar_estacion(ws_id, "FUGA", caudal="0.0")
+                else:
                     guardar_o_actualizar_estacion(ws_id, estado="OK")
                     if dashboard:
                         dashboard.actualizar_estacion(ws_id, "OK", caudal="0.0")

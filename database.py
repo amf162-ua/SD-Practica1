@@ -12,6 +12,7 @@ def init_db():
             estado TEXT NOT NULL DEFAULT 'DESCONECTADA'
         )
     ''')
+    cursor.execute("UPDATE estaciones SET estado = 'DESCONECTADA'")
     conn.commit()
     conn.close()
 

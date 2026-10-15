@@ -20,7 +20,7 @@ def deserializar_json(mensaje_bytes):
 
 def responder_ping_monitor(sock, bootstrap_kafka):
     """Mantiene el canal de presencia e incidencias locales con el Monitor por Sockets."""
-    global estado_salud, ws_id_global, hilo_kafka_iniciado
+    global estado_salud, ws_id_global, hilo_kafka_iniciado, regando
     try:
         while True:
             trama = sock.recv(1024)
@@ -68,6 +68,11 @@ def responder_ping_monitor(sock, bootstrap_kafka):
                     
     except Exception:
         pass
+    finally:
+        # Si perdemos la conexión con el Monitor, cortamos el riego por seguridad
+        if regando:
+            regando = False
+            print("\n[CORTE DE EMERGENCIA] Conexión perdida con el Monitor. Riego abortado.")
 
 
 def publicar_telemetria_kafka(bootstrap_server, ws_id, duracion_segundos=10, caudal_lmin=15.0,
@@ -127,7 +132,7 @@ operator_id = "DESCONOCIDO"):
         "operator_id": operator_id,
         "status": motivo_fin,
         "duration_seconds": segundos_transcurridos,
-        "total_volume_1": round(volumen_acumulado, 2)
+        "total_volume_l": round(volumen_acumulado, 2)
     }
 
     try:

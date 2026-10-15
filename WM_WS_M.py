@@ -135,20 +135,26 @@ def escuchar_engine(puerto_local, ws_id):
                     
                     # Protocolo PING a Engine
                     conn_engine.send(ENQ)
-                    if conn_engine.recv(1024) == ACK:
+                    ack = conn_engine.recv(1024)
+                    if ack and ack.startswith(ACK):
                         conn_engine.send(empaquetar("PING"))
-                        
-                        if conn_engine.recv(1024) == ACK:
-                            trama_resp = conn_engine.recv(1024)
-                            respuesta, valido = desempaquetar(trama_resp)
+                        trama_resp = conn_engine.recv(1024)
+
+                        # Si viene el ACK pegado al principio de la trama (<ACK><STX>...), lo quitamos
+                        if trama_resp.startswith(ACK):
+                            trama_resp = trama_resp[1:]
+                            if not trama_resp:
+                                trama_resp = conn_engine.recv(1024)
                             
-                            if valido:
-                                conn_engine.send(ACK)
-                                # Actualizar estado del Monitor según respuesta del Engine
-                                estado_actual_monitor = respuesta  # "OK" o "KO"
-                                print(f"[MONITOR <- ENGINE] Estado de salud: {respuesta}")
-                            else:
-                                conn_engine.send(NACK)
+                        respuesta, valido = desempaquetar(trama_resp)
+                            
+                        if valido:
+                            conn_engine.send(ACK)
+                            # Actualizar estado del Monitor según respuesta del Engine
+                            estado_actual_monitor = respuesta  # "OK" o "KO"
+                            print(f"[MONITOR <- ENGINE] Estado de salud: {respuesta}")
+                        else:
+                            conn_engine.send(NACK)
 
             except (socket.error, ConnectionResetError):
                 print("[MONITOR] Conexión perdida con el Engine.")
