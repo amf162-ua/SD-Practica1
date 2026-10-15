@@ -9,6 +9,8 @@ from protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
 FORMAT = 'utf-8'
 estado_salud = "OK"
 regando = False
+ws_id_global = None
+hilo_kafka_iniciado = False
 
 def deserializar_json(mensaje_bytes):
     """Convierte los bytes recibidos de Kafka en un diccionario JSON sin avisos de deprecación."""
@@ -16,9 +18,9 @@ def deserializar_json(mensaje_bytes):
         return None
     return json.loads(mensaje_bytes.decode('utf-8'))
 
-def responder_ping_monitor(sock):
+def responder_ping_monitor(sock, bootstrap_kafka):
     """Mantiene el canal de presencia e incidencias locales con el Monitor por Sockets."""
-    global estado_salud
+    global estado_salud, ws_id_global, hilo_kafka_iniciado
     try:
         while True:
             trama = sock.recv(1024)
@@ -38,7 +40,25 @@ def responder_ping_monitor(sock):
             else:
                 sock.send(ACK)
             
-            if mensaje == "PING":
+            if mensaje.startswith("CONFIG#"):
+                partes = mensaje.split("#")
+                ws_id_global = partes[1]
+                print(f"[ENGINE] ID asignado por el Monitor: {ws_id_global}")
+
+                if not hilo_kafka_iniciado:
+                    hilo_kafka = threading.Thread(
+                        target=escuchar_ordenes_kafka,
+                        args=(bootstrap_kafka, ws_id_global),
+                        daemon=True
+                    )
+                    hilo_kafka.start()
+                    hilo_kafka_iniciado = True
+
+                respuesta = empaquetar("OK#ID_RECIBIDO")
+                sock.send(respuesta)
+                sock.recv(1024)
+
+            elif mensaje == "PING":
                 respuesta = empaquetar(estado_salud)
                 sock.send(respuesta)
                 
@@ -122,17 +142,20 @@ def escuchar_ordenes_kafka(bootstrap_server, ws_id):
             hilo_riego.start()
 
 
-def iniciar_engine(ip_kafka, puerto_kafka, ip_monitor, puerto_monitor, ws_id):
-    global estado_salud
+def iniciar_engine(ip_kafka, puerto_kafka, ip_monitor, puerto_monitor, ws_id_param=None):
+    global estado_salud, ws_id_global, hilo_kafka_iniciado
     bootstrap_kafka = f"{ip_kafka}:{puerto_kafka}"
 
-    # 1. Hilo para escuchar órdenes desde Kafka
-    hilo_kafka = threading.Thread(
-        target=escuchar_ordenes_kafka,
-        args=(bootstrap_kafka, ws_id),
-        daemon=True
-    )
-    hilo_kafka.start()
+    # Si se especificó ws_id por parámetro (opcional), iniciamos Kafka de inmediato
+    if ws_id_param:
+        ws_id_global = ws_id_param
+        hilo_kafka = threading.Thread(
+            target=escuchar_ordenes_kafka,
+            args=(bootstrap_kafka, ws_id_global),
+            daemon=True
+        )
+        hilo_kafka.start()
+        hilo_kafka_iniciado = True
 
     # 2. Hilo para cambiar el estado manualmente vía consola (OK/KO)
     def leer_teclado():
@@ -152,7 +175,8 @@ def iniciar_engine(ip_kafka, puerto_kafka, ip_monitor, puerto_monitor, ws_id):
 
     threading.Thread(target=leer_teclado, daemon=True).start()
 
-    print(f"\n=== ENGINE ACTIVADO (Estación: {ws_id}) ===")
+    id_mostrar = ws_id_global if ws_id_global else "esperando asignación por Monitor..."
+    print(f"\n=== ENGINE ACTIVADO (Estación: {id_mostrar}) ===")
     print("Escribe 'ko' para simular avería/fuga.")
     print("Escribe 'ok' para reparar y volver a estado normal.")
     print("Presiona Ctrl+C para apagar.\n")
@@ -162,7 +186,7 @@ def iniciar_engine(ip_kafka, puerto_kafka, ip_monitor, puerto_monitor, ws_id):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             sock.connect((ip_monitor, puerto_monitor))
-            responder_ping_monitor(sock)
+            responder_ping_monitor(sock, bootstrap_kafka)
         except (socket.error, ConnectionRefusedError):
             time.sleep(3)
         finally:
@@ -170,15 +194,15 @@ def iniciar_engine(ip_kafka, puerto_kafka, ip_monitor, puerto_monitor, ws_id):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 6:
-        print("Uso: python WM_WS_E.py <ip_kafka> <puerto_kafka> <ip_monitor> <puerto_monitor> <ws_id>")
+    if len(sys.argv) < 5:
+        print("Uso: python WM_WS_E.py <ip_kafka> <puerto_kafka> <ip_monitor> <puerto_monitor> [<ws_id>]")
         sys.exit(1)
 
     ip_kafka = sys.argv[1]
     puerto_kafka = sys.argv[2]
     ip_monitor = sys.argv[3]
     puerto_monitor = int(sys.argv[4])
-    ws_id = sys.argv[5]
+    ws_id = sys.argv[5] if len(sys.argv) > 5 else None
 
     try:
         iniciar_engine(ip_kafka, puerto_kafka, ip_monitor, puerto_monitor, ws_id)

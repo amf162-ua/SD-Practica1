@@ -78,11 +78,15 @@ def mantener_conexion_central(ip_central, puerto_central, ws_id):
 
                 # Si cambia el estado o de forma periódica, notificamos a Central
                 if estado_actual_monitor != ultimo_estado_enviado:
-                    msg = f"STATUS#{ws_id}#{estado_actual_monitor}#0.0"
+                    if estado_actual_monitor == "KO":
+                        msg = f"LEAK#{ws_id}"
+                    else:
+                        msg = f"STATUS#{ws_id}#{estado_actual_monitor}#0.0"
+                    
                     res = enviar_a_central(msg)
                     if res:
                         ultimo_estado_enviado = estado_actual_monitor
-                        print(f"[MONITOR -> CENTRAL] Estado actualizado a: {estado_actual_monitor}")
+                        print(f"[MONITOR -> CENTRAL] Estado actualizado a: {estado_actual_monitor} (Mensaje: {msg})")
 
                 time.sleep(1)
 
@@ -115,6 +119,17 @@ def escuchar_engine(puerto_local, ws_id):
             print(f"\n[MONITOR] Engine conectado desde {addr}")
 
             try:
+                # 1. Enviar el ID asignado a esta estación al Engine recién conectado
+                conn_engine.send(ENQ)
+                if conn_engine.recv(1024) == ACK:
+                    conn_engine.send(empaquetar(f"CONFIG#{ws_id}"))
+                    if conn_engine.recv(1024) == ACK:
+                        trama_conf = conn_engine.recv(1024)
+                        conf_resp, valido = desempaquetar(trama_conf)
+                        if valido:
+                            conn_engine.send(ACK)
+                            print(f"[MONITOR] Configuración inicial enviada al Engine: WS_ID={ws_id}")
+
                 while True:
                     time.sleep(1)
                     

@@ -32,7 +32,7 @@ def guardar_o_actualizar_estacion(ws_id, ubicacion="Parque Central", estado="DES
 def obtener_estaciones():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, ubicacion FROM estaciones")
+    cursor.execute("SELECT id, ubicacion, estado FROM estaciones")
     filas = cursor.fetchall()
     conn.close()
     return filas

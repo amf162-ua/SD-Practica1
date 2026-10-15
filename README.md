@@ -44,13 +44,15 @@ python WM_WS_M.py 6000 localhost 5000 WS_01
 ### 3. Iniciar ENGINE
 Sintaxis:
 ```bash
-python WM_WS_E.py <ip_broker_kafka> <puerto_broker> <ip_monitor> <puerto_monitor>
+python WM_WS_E.py <ip_broker_kafka> <puerto_broker> <ip_monitor> <puerto_monitor> [<ws_id_opcional>]
 ```
 
-Ejemplo:
+Ejemplo (el Monitor le asigna el ID automáticamente por Sockets al conectar):
 ```bash
 python WM_WS_E.py localhost 9092 localhost 6000
 ```
+*(Opcionalmente, para pruebas directas en desarrollo, se puede pasar el ID como 5º parámetro: `python WM_WS_E.py localhost 9092 localhost 6000 WS_01`)*
+
 
 ---
 ## Interacción y Simulación de Averías
