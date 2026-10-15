@@ -215,6 +215,7 @@ def iniciar_consumidor_kafka(bootstrap_server):
             consumer = KafkaConsumer(
                 'wm-orders-request',
                 'wm-telemetry',
+                'wm-alerts-events',
                 bootstrap_servers=bootstrap_server,
                 value_deserializer=deserializar_json,
                 group_id='central-group',
@@ -237,6 +238,7 @@ def iniciar_consumidor_kafka(bootstrap_server):
             order_id = datos.get("order_id")
             ws_id = datos.get("ws_id")
             operator_id = datos.get("operator_id")
+            duracion = datos.get("duration_seconds", 10)
             
             log_central(f"[KAFKA] Solicitud de riego de {operator_id} para la estación {ws_id}")
 
@@ -261,6 +263,7 @@ def iniciar_consumidor_kafka(bootstrap_server):
                 "ws_id": ws_id,
                 "operator_id": operator_id,
                 "status": "AUTHORIZED" if autorizado else "DENIED",
+                "duration_seconds": duracion,
                 "reason": razon
             }
             producer.send('wm-orders-response', key=ws_id.encode('utf-8'), value=respuesta)
