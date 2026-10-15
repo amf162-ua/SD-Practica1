@@ -70,11 +70,12 @@ def responder_ping_monitor(sock, bootstrap_kafka):
         pass
 
 
-def publicar_telemetria_kafka(bootstrap_server, ws_id, duracion_segundos=10, caudal_lmin=15.0):
+def publicar_telemetria_kafka(bootstrap_server, ws_id, duracion_segundos=10, caudal_lmin=15.0,
+operator_id = "DESCONOCIDO"):
     """Bucle que simula el flujo de agua y publica telemetría cada 1 segundo en Kafka."""
     global regando, estado_salud
     regando = True
-    print(f"\n[ENGINE {ws_id}] ELECTROVÁLVULA ABIERTA - Iniciando riego ({duracion_segundos}s)...")
+    print(f"\n[ENGINE {ws_id}] ELECTROVÁLVULA ABIERTA - Iniciando riego ({duracion_segundos}s para {operator_id})...")
     
     producer = None
     try:
@@ -111,6 +112,31 @@ def publicar_telemetria_kafka(bootstrap_server, ws_id, duracion_segundos=10, cau
     regando = False
     print(f"[ENGINE {ws_id}] ELECTROVÁLVULA CERRADA - Riego finalizado.\n")
 
+    # Determinar causa de fin de riego 
+    if estado_salud != "OK":
+        motivo_fin = "ABORTED_LEAK"
+    elif segundos_transcurridos >= duracion_segundos:
+        motivo_fin = "COMPLETED"
+    else:
+        motivo_fin = "STOPPED_MANUAL"
+    
+    # Enviar evento de fin de riego a kafka
+    resumen = {
+        "event": "WATERING_FINISHED",
+        "ws_id": ws_id,
+        "operator_id": operator_id,
+        "status": motivo_fin,
+        "duration_seconds": segundos_transcurridos,
+        "total_volume_1": round(volumen_acumulado, 2)
+    }
+
+    try:
+        producer.send('wm-alerts-events', key=ws_id.encode('utf-8'), value=resumen)
+        producer.flush()
+        print(f"[ENGINE {ws_id}] Evento fin de riego enviado a 'wm-alerts-events': {resumen}\n")
+    except Exception as e:
+        print(f"[ENGINE {ws_id}] Error al enviar resumen final: {e}\n")
+
 
 def escuchar_ordenes_kafka(bootstrap_server, ws_id):
     """Escucha las respuestas de autorización en Kafka para activar el riego."""
@@ -133,10 +159,11 @@ def escuchar_ordenes_kafka(bootstrap_server, ws_id):
         # Filtrar solo si el mensaje es para esta Estación
         if datos.get("ws_id") == ws_id and datos.get("status") == "AUTHORIZED":
             duracion = datos.get("duration_seconds", 10)
+            operator_id = datos.get("operator_id", "DESCONOCIDO")
             # Iniciar el riego en un hilo aparte para no bloquear la escucha de Kafka
             hilo_riego = threading.Thread(
                 target=publicar_telemetria_kafka,
-                args=(bootstrap_server, ws_id, duracion),
+                args=(bootstrap_server, ws_id, duracion, 15.0, operator_id),
                 daemon=True
             )
             hilo_riego.start()
@@ -170,6 +197,12 @@ def iniciar_engine(ip_kafka, puerto_kafka, ip_monitor, puerto_monitor, ws_id_par
                 elif entrada == 'ok':
                     estado_salud = "OK"
                     print("\n[INFO ENGINE] Estado restablecido a 'OK'.")
+                elif entrada == 'stop':
+                    if regando:
+                        regando = False
+                        print("\n[INFO ENGINE] Parando el riego manualmente...")
+                    else:
+                        print("\n[INFO ENGINE] No hay ningún riego activo para detener.")
             except EOFError:
                 break
 
