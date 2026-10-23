@@ -4,167 +4,164 @@ import time
 import threading
 from protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
 
-FORMAT = 'utf-8'
+class WateringStationMonitor:
+    def __init__(self, puerto_engine: int, ip_central: str, puerto_central: int, ws_id: str):
+        self.puerto_engine = puerto_engine
+        self.ip_central = ip_central
+        self.puerto_central = puerto_central
+        self.ws_id = ws_id
 
-# Variables globales para compartir la conexión a Central entre hilos
-sock_central_global = None
-lock_central = threading.Lock()
+        # Sockets e hilos
+        self.sock_central = None
+        self.lock_central = threading.Lock()
+        
+        # Estados internos
+        self.estado_actual = "AVERIA"  # Estado inicial sin Engine
+        self.engine_conectado = False
+        self.ejecutando = True
 
-# Estado global del Monitor respecto a la Engine
-# Valores posibles: "AVERIA" (Sin Engine), "OK" (Engine OK), "KO" (Engine KO / Fuga)
-estado_actual_monitor = "AVERIA"
-engine_conectado = False
-
-
-def enviar_a_central(mensaje_str):
-    """Función auxiliar para enviar tramas a la Central siguiendo el protocolo."""
-    global sock_central_global
-    with lock_central:
-        if sock_central_global is None:
-            return False
-        try:
-            # 1. Iniciar transmisión
-            sock_central_global.send(ENQ)
-            if sock_central_global.recv(1024) != ACK:
-                return False
-            
-            # 2. Enviar trama empaquetada
-            sock_central_global.send(empaquetar(mensaje_str))
-            if sock_central_global.recv(1024) != ACK:
-                return False
-            
-            # 3. Recibir respuesta
-            trama_resp = sock_central_global.recv(1024)
-            resp_msg, valido = desempaquetar(trama_resp)
-            
-            # 4. Asentir la respuesta
-            if valido:
-                sock_central_global.send(ACK)
-                return resp_msg
-            else:
-                sock_central_global.send(NACK)
+    def enviar_a_central(self, mensaje_str: str) -> str:
+        """Envía un mensaje a Central usando el protocolo de enlace (ENQ/ACK -> Trama -> ACK)."""
+        with self.lock_central:
+            if self.sock_central is None:
                 return None
-        except Exception as e:
-            print(f"[ERROR MONITOR] Fallo al comunicar con Central: {e}")
-            return None
-
-
-def mantener_conexion_central(ip_central, puerto_central, ws_id):
-    """Mantiene el socket hacia la Central y envía el estado actual periódicamente."""
-    global sock_central_global, estado_actual_monitor, engine_conectado
-
-    while True:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            print(f"[MONITOR] Conectando a CENTRAL ({ip_central}:{puerto_central})...")
-            sock.connect((ip_central, puerto_central))
-            
-            with lock_central:
-                sock_central_global = sock
-            
-            # Autenticación inicial con estado 'AVERIA' si no hay Engine conectado
-            estado_inicial = estado_actual_monitor
-            respuesta = enviar_a_central(f"AUTH#{ws_id}#{estado_inicial}")
-            if respuesta:
-                print(f"[MONITOR <- CENTRAL] Autenticado: {respuesta}")
-            
-            # Bucle continuo para reportar cambios de estado a la Central
-            ultimo_estado_enviado = None
-
-            while True:
-                # Si no hay Engine, nos aseguramos de que el estado sea 'AVERIA'
-                if not engine_conectado:
-                    estado_actual_monitor = "AVERIA"
-
-                # Si cambia el estado o de forma periódica, notificamos a Central
-                if estado_actual_monitor != ultimo_estado_enviado:
-                    if estado_actual_monitor == "KO":
-                        msg = f"LEAK#{ws_id}"
-                    else:
-                        msg = f"STATUS#{ws_id}#{estado_actual_monitor}#0.0"
-                    
-                    res = enviar_a_central(msg)
-                    if res:
-                        ultimo_estado_enviado = estado_actual_monitor
-                        print(f"[MONITOR -> CENTRAL] Estado actualizado a: {estado_actual_monitor} (Mensaje: {msg})")
-
-                time.sleep(1)
-
-        except (socket.error, ConnectionRefusedError):
-            print("[MONITOR] CENTRAL no disponible. Reintentando en 3 segundos...")
-        finally:
-            with lock_central:
-                sock_central_global = None
-            sock.close()
-            time.sleep(3)
-
-
-def escuchar_engine(puerto_local, ws_id):
-    """Servidor local para aceptar la conexión del Engine."""
-    global estado_actual_monitor, engine_conectado
-
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(('0.0.0.0', puerto_local))
-    server.listen(1)
-    server.settimeout(1.0)
-    
-    print(f"[MONITOR] Servidor interno listo en puerto {puerto_local}. Esperando Engine...")
-
-    while True:
-        try:
-            conn_engine, addr = server.accept()
-            conn_engine.settimeout(None)
-            engine_conectado = True
-            print(f"\n[MONITOR] Engine conectado desde {addr}")
-
             try:
-                # 1. Enviar el ID asignado a esta estación al Engine recién conectado
-                conn_engine.send(ENQ)
-                if conn_engine.recv(1024) == ACK:
-                    conn_engine.send(empaquetar(f"CONFIG#{ws_id}"))
-                    if conn_engine.recv(1024) == ACK:
-                        trama_conf = conn_engine.recv(1024)
-                        conf_resp, valido = desempaquetar(trama_conf)
-                        if valido:
-                            conn_engine.send(ACK)
-                            print(f"[MONITOR] Configuración inicial enviada al Engine: WS_ID={ws_id}")
+                # 1. Petición de transmisión
+                self.sock_central.send(ENQ)
+                if self.sock_central.recv(1024) != ACK:
+                    return None
 
-                while True:
-                    time.sleep(1)
-                    
-                    # Protocolo PING a Engine
-                    conn_engine.send(ENQ)
-                    ack = conn_engine.recv(1024)
-                    if ack and ack.startswith(ACK):
-                        conn_engine.send(empaquetar("PING"))
-                        trama_resp = conn_engine.recv(1024)
+                # 2. Envío de trama empaquetada
+                self.sock_central.send(empaquetar(mensaje_str))
+                if self.sock_central.recv(1024) != ACK:
+                    return None
 
-                        # Si viene el ACK pegado al principio de la trama (<ACK><STX>...), lo quitamos
-                        if trama_resp.startswith(ACK):
-                            trama_resp = trama_resp[1:]
-                            if not trama_resp:
-                                trama_resp = conn_engine.recv(1024)
-                            
-                        respuesta, valido = desempaquetar(trama_resp)
-                            
-                        if valido:
-                            conn_engine.send(ACK)
-                            # Actualizar estado del Monitor según respuesta del Engine
-                            estado_actual_monitor = respuesta  # "OK" o "KO"
-                            print(f"[MONITOR <- ENGINE] Estado de salud: {respuesta}")
+                # 3. Recepción de respuesta de Central
+                trama_resp = self.sock_central.recv(1024)
+                resp_msg, valido = desempaquetar(trama_resp)
+
+                # 4. Asentimiento final
+                if valido:
+                    self.sock_central.send(ACK)
+                    return resp_msg
+                else:
+                    self.sock_central.send(NACK)
+                    return None
+            except Exception as e:
+                print(f"[MONITOR {self.ws_id}] Error en comunicación con Central: {e}")
+                return None
+
+    def hilo_comunicacion_central(self):
+        """Mantiene la conexión socket persistente con Central y reporta cambios de estado."""
+        while self.ejecutando:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                print(f"[MONITOR {self.ws_id}] Conectando a Central en {self.ip_central}:{self.puerto_central}...")
+                sock.connect((self.ip_central, self.puerto_central))
+
+                with self.lock_central:
+                    self.sock_central = sock
+
+                # Autenticación inicial
+                res_auth = self.enviar_a_central(f"AUTH#{self.ws_id}#{self.estado_actual}")
+                if res_auth:
+                    print(f"[MONITOR {self.ws_id}] Autenticado en Central: {res_auth}")
+
+                ultimo_estado_enviado = None
+
+                while self.ejecutando:
+                    # Si el Engine se desconectó, aseguramos estado 'AVERIA'
+                    if not self.engine_conectado:
+                        self.estado_actual = "AVERIA"
+
+                    # Reportar a Central si hay cambio de estado
+                    if self.estado_actual != ultimo_estado_enviado:
+                        if self.estado_actual == "KO":
+                            msg = f"LEAK#{self.ws_id}"
                         else:
-                            conn_engine.send(NACK)
+                            msg = f"STATUS#{self.ws_id}#{self.estado_actual}#0.0"
 
-            except (socket.error, ConnectionResetError):
-                print("[MONITOR] Conexión perdida con el Engine.")
+                        respuesta = self.enviar_a_central(msg)
+                        if respuesta:
+                            ultimo_estado_enviado = self.estado_actual
+                            print(f"[MONITOR {self.ws_id}] Estado actualizado en Central: {self.estado_actual}")
+
+                    time.sleep(1)
+
+            except (socket.error, ConnectionRefusedError):
+                print(f"[MONITOR {self.ws_id}] Central no disponible. Reintentando en 3s...")
             finally:
-                engine_conectado = False
-                estado_actual_monitor = "AVERIA"
-                conn_engine.close()
+                with self.lock_central:
+                    self.sock_central = None
+                sock.close()
+                time.sleep(3)
 
-        except socket.timeout:
-            continue
+    def escuchar_engine(self):
+        """Servidor TCP local para gestionar la conexión del Engine."""
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(('0.0.0.0', self.puerto_engine))
+        server.listen(1)
+        server.settimeout(1.0)
+
+        print(f"[MONITOR {self.ws_id}] Servidor listo en puerto {self.puerto_engine}. Esperando Engine...")
+
+        while self.ejecutando:
+            try:
+                conn_engine, addr = server.accept()
+                conn_engine.settimeout(None)
+                self.engine_conectado = True
+                print(f"[MONITOR {self.ws_id}] Engine conectado desde {addr}")
+
+                try:
+                    # Configuración inicial del Engine
+                    conn_engine.send(ENQ)
+                    if conn_engine.recv(1024) == ACK:
+                        conn_engine.send(empaquetar(f"CONFIG#{self.ws_id}"))
+                        if conn_engine.recv(1024) == ACK:
+                            trama_conf = conn_engine.recv(1024)
+                            conf_resp, valido = desempaquetar(trama_conf)
+                            if valido:
+                                conn_engine.send(ACK)
+                                print(f"[MONITOR {self.ws_id}] ID {self.ws_id} asignado al Engine")
+
+                    # Bucle PING a Engine
+                    while self.ejecutando:
+                        time.sleep(1)
+                        conn_engine.send(ENQ)
+                        ack = conn_engine.recv(1024)
+                        if ack and ack.startswith(ACK):
+                            conn_engine.send(empaquetar("PING"))
+                            trama_resp = conn_engine.recv(1024)
+
+                            if trama_resp.startswith(ACK):
+                                trama_resp = trama_resp[1:]
+                                if not trama_resp:
+                                    trama_resp = conn_engine.recv(1024)
+
+                            respuesta, valido = desempaquetar(trama_resp)
+
+                            if valido:
+                                conn_engine.send(ACK)
+                                self.estado_actual = respuesta  # 'OK' o 'KO'
+                            else:
+                                conn_engine.send(NACK)
+
+                except (socket.error, ConnectionResetError):
+                    print(f"[MONITOR {self.ws_id}] Conexión perdida con el Engine.")
+                finally:
+                    self.engine_conectado = False
+                    self.estado_actual = "AVERIA"
+                    conn_engine.close()
+
+            except socket.timeout:
+                continue
+
+    def iniciar(self):
+        """Inicia los hilos de ejecución del Monitor."""
+        hilo_central = threading.Thread(target=self.hilo_comunicacion_central, daemon=True)
+        hilo_central.start()
+        self.escuchar_engine()
 
 
 if __name__ == "__main__":
@@ -177,18 +174,9 @@ if __name__ == "__main__":
     puerto_central = int(sys.argv[3])
     ws_id = sys.argv[4]
 
+    monitor = WateringStationMonitor(puerto_local, ip_central, puerto_central, ws_id)
     try:
-        # Hilo persistente para comunicación con Central
-        hilo_central = threading.Thread(
-            target=mantener_conexion_central, 
-            args=(ip_central, puerto_central, ws_id), 
-            daemon=True
-        )
-        hilo_central.start()
-        
-        # Bucle principal escuchando al Engine
-        escuchar_engine(puerto_local, ws_id)
-        
+        monitor.iniciar()
     except KeyboardInterrupt:
-        print("\n[MONITOR] Apagado limpio por usuario (Ctrl+C).")
+        print(f"\n[MONITOR {ws_id}] Apagado ordenado.")
         sys.exit(0)
