@@ -6,229 +6,256 @@ import json
 from kafka import KafkaConsumer, KafkaProducer
 from protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
 
-FORMAT = 'utf-8'
-estado_salud = "OK"
-regando = False
-ws_id_global = None
-hilo_kafka_iniciado = False
-
 def deserializar_json(mensaje_bytes):
-    """Convierte los bytes recibidos de Kafka en un diccionario JSON sin avisos de deprecación."""
+    """Convierte los bytes recibidos de Kafka en un diccionario JSON."""
     if mensaje_bytes is None:
         return None
-    return json.loads(mensaje_bytes.decode('utf-8'))
-
-def responder_ping_monitor(sock, bootstrap_kafka):
-    """Mantiene el canal de presencia e incidencias locales con el Monitor por Sockets."""
-    global estado_salud, ws_id_global, hilo_kafka_iniciado, regando
     try:
-        while True:
-            trama = sock.recv(1024)
-            if not trama:
-                break
-            
-            if trama == ENQ:
-                sock.send(ACK)
-                continue
-            elif trama == EOT:
-                break
-            
-            mensaje, valido = desempaquetar(trama)
-            if not valido:
-                sock.send(NACK)
-                continue
-            else:
-                sock.send(ACK)
-            
-            if mensaje.startswith("CONFIG#"):
-                partes = mensaje.split("#")
-                ws_id_global = partes[1]
-                print(f"[ENGINE] ID asignado por el Monitor: {ws_id_global}")
-
-                if not hilo_kafka_iniciado:
-                    hilo_kafka = threading.Thread(
-                        target=escuchar_ordenes_kafka,
-                        args=(bootstrap_kafka, ws_id_global),
-                        daemon=True
-                    )
-                    hilo_kafka.start()
-                    hilo_kafka_iniciado = True
-
-                respuesta = empaquetar("OK#ID_RECIBIDO")
-                sock.send(respuesta)
-                sock.recv(1024)
-
-            elif mensaje == "PING":
-                respuesta = empaquetar(estado_salud)
-                sock.send(respuesta)
-                
-                ack_recibido = sock.recv(1024)
-                if ack_recibido != ACK:
-                    pass
-                    
+        return json.loads(mensaje_bytes.decode('utf-8'))
     except Exception:
-        pass
-    finally:
-        # Si perdemos la conexión con el Monitor, cortamos el riego por seguridad
-        if regando:
-            regando = False
-            print("\n[CORTE DE EMERGENCIA] Conexión perdida con el Monitor. Riego abortado.")
+        return None
 
 
-def publicar_telemetria_kafka(bootstrap_server, ws_id, duracion_segundos=10, caudal_lmin=15.0,
-operator_id = "DESCONOCIDO"):
-    """Bucle que simula el flujo de agua y publica telemetría cada 1 segundo en Kafka."""
-    global regando, estado_salud
-    regando = True
-    print(f"\n[ENGINE {ws_id}] ELECTROVÁLVULA ABIERTA - Iniciando riego ({duracion_segundos}s para {operator_id})...")
-    
-    producer = None
-    try:
-        producer = KafkaProducer(
-            bootstrap_servers=bootstrap_server,
-            value_serializer=lambda v: json.dumps(v).encode('utf-8')
-        )
-    except Exception as e:
-        print(f"[ENGINE {ws_id}] Error conectando productor Kafka: {e}")
-        regando = False
-        return
+class WateringStationEngine:
+    def __init__(self, ip_kafka: str, puerto_kafka: str, ip_monitor: str, puerto_monitor: int, ws_id_param: str = None):
+        self.bootstrap_kafka = f"{ip_kafka}:{puerto_kafka}"
+        self.ip_monitor = ip_monitor
+        self.puerto_monitor = puerto_monitor
+        
+        # Identificador de la estación
+        self.ws_id = ws_id_param
+        
+        # Estados internos protegidos por Lock
+        self.lock = threading.Lock()
+        self.estado_salud = "OK"  # 'OK' o 'KO' (Fuga)
+        self.regando = False
+        
+        # Control de hilos
+        self.ejecutando = True
+        self.hilo_kafka_iniciado = False
 
-    volumen_acumulado = 0.0
-    segundos_transcurridos = 0
+    def responder_ping_monitor(self, sock):
+        """Atiende los mensajes del Monitor a través del Socket interno."""
+        try:
+            while self.ejecutando:
+                trama = sock.recv(1024)
+                if not trama:
+                    break
 
-    while segundos_transcurridos < duracion_segundos and regando and estado_salud == "OK":
-        time.sleep(1)
-        segundos_transcurridos += 1
-        volumen_acumulado += (caudal_lmin / 60.0) # Convertir L/min a L/segundo
+                if trama == ENQ:
+                    sock.send(ACK)
+                    continue
+                elif trama == EOT:
+                    break
 
-        payload = {
-            "ws_id": ws_id,
-            "flow_rate_lmin": caudal_lmin,
-            "accumulated_volume_l": round(volumen_acumulado, 2),
-            "elapsed_seconds": segundos_transcurridos
+                mensaje, valido = desempaquetar(trama)
+                if not valido:
+                    sock.send(NACK)
+                    continue
+                else:
+                    sock.send(ACK)
+
+                # 1. Configuración de ID asignada por el Monitor
+                if mensaje.startswith("CONFIG#"):
+                    partes = mensaje.split("#")
+                    self.ws_id = partes[1]
+                    print(f"[ENGINE] ID asignado por el Monitor: {self.ws_id}")
+
+                    # Iniciar consumidor de Kafka una vez conocido el ID
+                    if not self.hilo_kafka_iniciado:
+                        hilo_kafka = threading.Thread(
+                            target=self.escuchar_ordenes_kafka,
+                            daemon=True
+                        )
+                        hilo_kafka.start()
+                        self.hilo_kafka_iniciado = True
+
+                    respuesta = empaquetar("OK#ID_RECIBIDO")
+                    sock.send(respuesta)
+                    sock.recv(1024)
+
+                # 2. Responder al PING periódico de salud
+                elif mensaje == "PING":
+                    with self.lock:
+                        estado_actual = self.estado_salud
+
+                    respuesta = empaquetar(estado_actual)
+                    sock.send(respuesta)
+
+                    ack_recibido = sock.recv(1024)
+                    if ack_recibido != ACK:
+                        pass
+
+        except Exception as e:
+            print(f"[ENGINE {self.ws_id}] Conexión cerrada con Monitor: {e}")
+        finally:
+            # Requisito de seguridad: Si perdemos conexión con el Monitor, cortamos el riego
+            with self.lock:
+                if self.regando:
+                    self.regando = False
+                    print(f"\n[CORTE DE EMERGENCIA {self.ws_id}] Conexión perdida con el Monitor. Riego abortado.")
+
+    def publicar_telemetria_kafka(self, duracion_segundos=10, caudal_lmin=15.0, operator_id="DESCONOCIDO"):
+        """Emite lecturas de caudal y volumen acumulado cada 1s y genera el evento final."""
+        with self.lock:
+            self.regando = True
+
+        print(f"\n[ENGINE {self.ws_id}] ELECTROVÁLVULA ABIERTA — Iniciando riego ({duracion_segundos}s solicitados por {operator_id})...")
+
+        producer = None
+        try:
+            producer = KafkaProducer(
+                bootstrap_servers=self.bootstrap_kafka,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8')
+            )
+        except Exception as e:
+            print(f"[ENGINE {self.ws_id}] Error conectando productor Kafka: {e}")
+            with self.lock:
+                self.regando = False
+            return
+
+        volumen_acumulado = 0.0
+        segundos_transcurridos = 0
+
+        while segundos_transcurridos < duracion_segundos:
+            with self.lock:
+                if not self.regando or self.estado_salud != "OK":
+                    break
+
+            time.sleep(1)
+            segundos_transcurridos += 1
+            volumen_acumulado += (caudal_lmin / 60.0)  # Convertir L/min a L/segundo
+
+            payload = {
+                "ws_id": self.ws_id,
+                "flow_rate_lmin": caudal_lmin,
+                "accumulated_volume_l": round(volumen_acumulado, 2),
+                "elapsed_seconds": segundos_transcurridos
+            }
+
+            try:
+                producer.send('wm-telemetry', key=self.ws_id.encode('utf-8'), value=payload)
+                print(f"[ENGINE {self.ws_id}] Telemetría -> Caudal: {caudal_lmin} L/min | Acumulado: {round(volumen_acumulado, 2)} L")
+            except Exception as e:
+                print(f"[ENGINE {self.ws_id}] Error al enviar telemetría: {e}")
+
+        with self.lock:
+            self.regando = False
+            estado_final_salud = self.estado_salud
+
+        print(f"[ENGINE {self.ws_id}] ELECTROVÁLVULA CERRADA — Riego finalizado.\n")
+
+        # Evaluar motivo de finalización
+        if estado_final_salud != "OK":
+            motivo_fin = "ABORTED_LEAK"
+        elif segundos_transcurridos >= duracion_segundos:
+            motivo_fin = "COMPLETED"
+        else:
+            motivo_fin = "STOPPED_MANUAL"
+
+        # Notificar fin de riego a Kafka
+        resumen = {
+            "event": "WATERING_FINISHED",
+            "ws_id": self.ws_id,
+            "operator_id": operator_id,
+            "status": motivo_fin,
+            "duration_seconds": segundos_transcurridos,
+            "total_volume_l": round(volumen_acumulado, 2)
         }
 
         try:
-            producer.send('wm-telemetry', key=ws_id.encode('utf-8'), value=payload)
-            print(f"[ENGINE {ws_id}] Telemetría enviada -> Caudal: {caudal_lmin} L/min | Acumulado: {round(volumen_acumulado, 2)} L")
+            producer.send('wm-alerts-events', key=self.ws_id.encode('utf-8'), value=resumen)
+            producer.flush()
+            print(f"[ENGINE {self.ws_id}] Evento de cierre enviado a 'wm-alerts-events': {motivo_fin}\n")
         except Exception as e:
-            print(f"[ENGINE {ws_id}] Error al enviar telemetría: {e}")
+            print(f"[ENGINE {self.ws_id}] Error al enviar resumen final: {e}\n")
 
-    regando = False
-    print(f"[ENGINE {ws_id}] ELECTROVÁLVULA CERRADA - Riego finalizado.\n")
+    def escuchar_ordenes_kafka(self):
+        """Escucha en Kafka las respuestas de autorización expedidas por Central."""
+        consumer = None
+        while consumer is None and self.ejecutando:
+            try:
+                consumer = KafkaConsumer(
+                    'wm-orders-response',
+                    bootstrap_servers=self.bootstrap_kafka,
+                    value_deserializer=deserializar_json,
+                    group_id=f'engine-group-{self.ws_id}',
+                    auto_offset_reset='latest'
+                )
+                print(f"[ENGINE {self.ws_id}] Escuchando órdenes en 'wm-orders-response'...")
+            except Exception:
+                time.sleep(3)
 
-    # Determinar causa de fin de riego 
-    if estado_salud != "OK":
-        motivo_fin = "ABORTED_LEAK"
-    elif segundos_transcurridos >= duracion_segundos:
-        motivo_fin = "COMPLETED"
-    else:
-        motivo_fin = "STOPPED_MANUAL"
-    
-    # Enviar evento de fin de riego a kafka
-    resumen = {
-        "event": "WATERING_FINISHED",
-        "ws_id": ws_id,
-        "operator_id": operator_id,
-        "status": motivo_fin,
-        "duration_seconds": segundos_transcurridos,
-        "total_volume_l": round(volumen_acumulado, 2)
-    }
+        for msg in consumer:
+            if not self.ejecutando:
+                break
+            datos = msg.value
+            if not datos:
+                continue
 
-    try:
-        producer.send('wm-alerts-events', key=ws_id.encode('utf-8'), value=resumen)
-        producer.flush()
-        print(f"[ENGINE {ws_id}] Evento fin de riego enviado a 'wm-alerts-events': {resumen}\n")
-    except Exception as e:
-        print(f"[ENGINE {ws_id}] Error al enviar resumen final: {e}\n")
+            # Iniciar riego únicamente si la orden es para esta WS y está autorizada
+            if datos.get("ws_id") == self.ws_id and datos.get("status") == "AUTHORIZED":
+                duracion = datos.get("duration_seconds", 10)
+                operator_id = datos.get("operator_id", "DESCONOCIDO")
 
+                hilo_riego = threading.Thread(
+                    target=self.publicar_telemetria_kafka,
+                    args=(duracion, 15.0, operator_id),
+                    daemon=True
+                )
+                hilo_riego.start()
 
-def escuchar_ordenes_kafka(bootstrap_server, ws_id):
-    """Escucha las respuestas de autorización en Kafka para activar el riego."""
-    consumer = None
-    while consumer is None:
-        try:
-            consumer = KafkaConsumer(
-                'wm-orders-response',
-                bootstrap_servers=bootstrap_server,
-                value_deserializer=deserializar_json,
-                group_id=f'engine-group-{ws_id}',
-                auto_offset_reset='latest'
-            )
-            print(f"[ENGINE {ws_id}] Escuchando órdenes en el tópico 'wm-orders-response'...")
-        except Exception:
-            time.sleep(3)
-
-    for msg in consumer:
-        datos = msg.value
-        # Filtrar solo si el mensaje es para esta Estación
-        if datos.get("ws_id") == ws_id and datos.get("status") == "AUTHORIZED":
-            duracion = datos.get("duration_seconds", 10)
-            operator_id = datos.get("operator_id", "DESCONOCIDO")
-            # Iniciar el riego en un hilo aparte para no bloquear la escucha de Kafka
-            hilo_riego = threading.Thread(
-                target=publicar_telemetria_kafka,
-                args=(bootstrap_server, ws_id, duracion, 15.0, operator_id),
-                daemon=True
-            )
-            hilo_riego.start()
-
-
-def iniciar_engine(ip_kafka, puerto_kafka, ip_monitor, puerto_monitor, ws_id_param=None):
-    global estado_salud, ws_id_global, hilo_kafka_iniciado
-    bootstrap_kafka = f"{ip_kafka}:{puerto_kafka}"
-
-    # Si se especificó ws_id por parámetro (opcional), iniciamos Kafka de inmediato
-    if ws_id_param:
-        ws_id_global = ws_id_param
-        hilo_kafka = threading.Thread(
-            target=escuchar_ordenes_kafka,
-            args=(bootstrap_kafka, ws_id_global),
-            daemon=True
-        )
-        hilo_kafka.start()
-        hilo_kafka_iniciado = True
-
-    # 2. Hilo para cambiar el estado manualmente vía consola (OK/KO)
-    def leer_teclado():
-        global estado_salud, regando
-        while True:
+    def leer_teclado(self):
+        """Permite simular incidencias manuamente desde la consola."""
+        while self.ejecutando:
             try:
                 entrada = input().strip().lower()
                 if entrada == 'ko':
-                    estado_salud = "KO"
-                    regando = False # Abortar riego activo si hay avería
-                    print("\n[ALERTA ENGINE] Estado cambiado a 'KO' (Fuga/Avería). Riego abortado.")
+                    with self.lock:
+                        self.estado_salud = "KO"
+                        self.regando = False
+                    print(f"\n[ALERTA ENGINE {self.ws_id}] Estado cambiado a 'KO' (Fuga/Avería). Riego abortado.")
                 elif entrada == 'ok':
-                    estado_salud = "OK"
-                    print("\n[INFO ENGINE] Estado restablecido a 'OK'.")
+                    with self.lock:
+                        self.estado_salud = "OK"
+                    print(f"\n[INFO ENGINE {self.ws_id}] Estado restablecido a 'OK'.")
                 elif entrada == 'stop':
-                    if regando:
-                        regando = False
-                        print("\n[INFO ENGINE] Parando el riego manualmente...")
-                    else:
-                        print("\n[INFO ENGINE] No hay ningún riego activo para detener.")
-            except EOFError:
+                    with self.lock:
+                        if self.regando:
+                            self.regando = False
+                            print(f"\n[INFO ENGINE {self.ws_id}] Deteniendo el riego manualmente...")
+                        else:
+                            print(f"\n[INFO ENGINE {self.ws_id}] No hay ningún riego activo para detener.")
+            except (EOFError, KeyboardInterrupt):
                 break
 
-    threading.Thread(target=leer_teclado, daemon=True).start()
+    def iniciar(self):
+        """Inicia el Engine y mantiene el bucle de reconexión Socket hacia el Monitor."""
+        # Si se le pasó ws_id por parámetro al arrancar, habilitamos Kafka desde el inicio
+        if self.ws_id and not self.hilo_kafka_iniciado:
+            hilo_kafka = threading.Thread(target=self.escuchar_ordenes_kafka, daemon=True)
+            hilo_kafka.start()
+            self.hilo_kafka_iniciado = True
 
-    id_mostrar = ws_id_global if ws_id_global else "esperando asignación por Monitor..."
-    print(f"\n=== ENGINE ACTIVADO (Estación: {id_mostrar}) ===")
-    print("Escribe 'ko' para simular avería/fuga.")
-    print("Escribe 'ok' para reparar y volver a estado normal.")
-    print("Presiona Ctrl+C para apagar.\n")
+        threading.Thread(target=self.leer_teclado, daemon=True).start()
 
-    # 3. Bucle persistente de conexión Socket hacia el Monitor
-    while True:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            sock.connect((ip_monitor, puerto_monitor))
-            responder_ping_monitor(sock, bootstrap_kafka)
-        except (socket.error, ConnectionRefusedError):
-            time.sleep(3)
-        finally:
-            sock.close()
+        id_mostrar = self.ws_id if self.ws_id else "esperando asignación..."
+        print(f"\n=== ENGINE ACTIVADO (Estación: {id_mostrar}) ===")
+        print("Comandos disponibles en consola:")
+        print("  'ko'   -> Simular avería/fuga (aborta riego)")
+        print("  'ok'   -> Restablecer a estado normal")
+        print("  'stop' -> Detener riego actual manualmente")
+        print("  Ctrl+C -> Apagar módulo\n")
+
+        while self.ejecutando:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.connect((self.ip_monitor, self.puerto_monitor))
+                self.responder_ping_monitor(sock)
+            except (socket.error, ConnectionRefusedError):
+                time.sleep(3)
+            finally:
+                sock.close()
 
 
 if __name__ == "__main__":
@@ -242,8 +269,9 @@ if __name__ == "__main__":
     puerto_monitor = int(sys.argv[4])
     ws_id = sys.argv[5] if len(sys.argv) > 5 else None
 
+    engine = WateringStationEngine(ip_kafka, puerto_kafka, ip_monitor, puerto_monitor, ws_id)
     try:
-        iniciar_engine(ip_kafka, puerto_kafka, ip_monitor, puerto_monitor, ws_id)
+        engine.iniciar()
     except KeyboardInterrupt:
-        print("\n[ENGINE] Apagado limpio por usuario (Ctrl+C).")
+        print("\n[ENGINE] Apagado ordenado por el usuario.")
         sys.exit(0)
