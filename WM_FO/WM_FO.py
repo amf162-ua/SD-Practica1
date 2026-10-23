@@ -8,25 +8,31 @@ def deserializar_json(mensaje_bytes):
     """Convierte los bytes recibidos de Kafka en un diccionario JSON."""
     if mensaje_bytes is None:
         return None
-    return json.loads(mensaje_bytes.decode('utf-8'))
+    try:
+        return json.loads(mensaje_bytes.decode('utf-8'))
+    except Exception:
+        return None
 
 
 class FieldOperator:
-    def __init__(self, ip_kafka, puerto_kafka, operator_id):
+    def __init__(self, ip_kafka: str, puerto_kafka: str, operator_id: str):
         self.bootstrap_server = f"{ip_kafka}:{puerto_kafka}"
         self.operator_id = operator_id
+        
         self.producer = None
         self.consumer = None
         
-        # Variables de sincronización para órdenes en curso
+        # Sincronización de órdenes en curso
         self.orden_activa = None
         self.ws_activa = None
         self.evento_orden_terminada = threading.Event()
+        self.ejecutando = True
 
         self._iniciar_productor()
         self._iniciar_hilo_consumidor()
 
     def _iniciar_productor(self):
+        """Inicializa el cliente Productor de Kafka."""
         try:
             self.producer = KafkaProducer(
                 bootstrap_servers=self.bootstrap_server,
@@ -34,12 +40,13 @@ class FieldOperator:
             )
             print(f"[FO {self.operator_id}] Productor Kafka conectado a {self.bootstrap_server}")
         except Exception as e:
-            print(f"[ERROR FO] No se pudo conectar productor Kafka: {e}")
+            print(f"[ERROR FO {self.operator_id}] No se pudo conectar el productor Kafka: {e}")
             sys.exit(1)
 
     def _iniciar_hilo_consumidor(self):
+        """Lanza el hilo consumidor para escuchar eventos y telemetría."""
         def _escuchar_kafka():
-            while self.consumer is None:
+            while self.consumer is None and self.ejecutando:
                 try:
                     self.consumer = KafkaConsumer(
                         'wm-orders-response',
@@ -53,13 +60,17 @@ class FieldOperator:
                     time.sleep(3)
 
             for msg in self.consumer:
+                if not self.ejecutando:
+                    break
                 topico = msg.topic
                 datos = msg.value
+                if not datos:
+                    continue
 
-                # 1. Respuestas de autorización o resumen final
+                # 1. Respuestas de autorización o resumen final expedidas por Central
                 if topico == 'wm-orders-response':
                     if datos.get("operator_id") == self.operator_id:
-                        # Caso A: Respuesta a la solicitud
+                        # Caso A: Respuesta inicial a la solicitud (AUTHORIZED / DENIED)
                         if "status" in datos and "event" not in datos:
                             estado = datos.get("status")
                             razon = datos.get("reason", "")
@@ -70,10 +81,10 @@ class FieldOperator:
                                 print(f"\n[DENEGADO] CENTRAL ha rechazado la solicitud. Motivo: {razon}\n")
                                 self.evento_orden_terminada.set()
 
-                        # Caso B: Resumen final emitido por Central
+                        # Caso B: Resumen final de riego enviado por Central
                         elif datos.get("event") == "WATERING_SUMMARY":
                             print("\n" + "="*50)
-                            print(f"      RESUMEN FINAL DE RIEGO - ESTACIÓN {datos.get('ws_id')}")
+                            print(f"      RESUMEN FINAL DE RIEGO — ESTACIÓN {datos.get('ws_id')}")
                             print("="*50)
                             print(f"  Operario:     {datos.get('operator_id')}")
                             print(f"  Estado Final: {datos.get('status')}")
@@ -82,7 +93,7 @@ class FieldOperator:
                             print("="*50 + "\n")
                             self.evento_orden_terminada.set()
 
-                # 2. Telemetría en directo solo si la estación que riega es la nuestra
+                # 2. Telemetría en directo (Filtrada únicamente para la estación que está atendiendo este operario)
                 elif topico == 'wm-telemetry':
                     if self.ws_activa and datos.get("ws_id") == self.ws_activa:
                         caudal = datos.get("flow_rate_lmin")
@@ -93,8 +104,8 @@ class FieldOperator:
         hilo = threading.Thread(target=_escuchar_kafka, daemon=True)
         hilo.start()
 
-    def solicitar_riego(self, ws_id, duracion_segundos):
-        """Envía la petición a Central y espera a que concluya el servicio."""
+    def solicitar_riego(self, ws_id: str, duracion_segundos: int):
+        """Envia una petición de riego a Central y bloquea la ejecución hasta su conclusión."""
         self.orden_activa = f"ORD-{int(time.time())}"
         self.ws_activa = ws_id
         self.evento_orden_terminada.clear()
@@ -110,21 +121,22 @@ class FieldOperator:
         self.producer.send('wm-orders-request', key=ws_id.encode('utf-8'), value=peticion)
         self.producer.flush()
 
-        # Esperar hasta que concluya (sea autorizada+terminada, o rechazada) con margen de seguridad
+        # Esperar hasta que concluya el servicio (con margen de seguridad sobre la duración)
         concluido = self.evento_orden_terminada.wait(timeout=duracion_segundos + 10)
         if not concluido:
             print(f"\n[AVISO FO] Tiempo límite de espera agotado ({duracion_segundos + 10}s). La orden no pudo completarse.")
+        
         self.ws_activa = None
         self.orden_activa = None
 
-    def procesar_fichero(self, ruta_fichero):
+    def procesar_fichero(self, ruta_fichero: str):
         """Lee un archivo con formato: <WS_ID> <DURACION> y ejecuta las órdenes con pausa de 4s."""
         print(f"\n[MODO FICHERO] Leyendo servicios desde: {ruta_fichero}")
         try:
             with open(ruta_fichero, 'r', encoding='utf-8') as f:
                 lineas = [l.strip() for l in f if l.strip() and not l.startswith('#')]
         except Exception as e:
-            print(f"[ERROR] No se pudo leer el archivo: {e}")
+            print(f"[ERROR FO] No se pudo leer el archivo: {e}")
             return
 
         for idx, linea in enumerate(lineas):
@@ -147,7 +159,7 @@ class FieldOperator:
     def modo_interactivo(self):
         """Menú por terminal para uso manual por parte del operario."""
         print(f"\n=== APLICACIÓN DE OPERARIO DE CAMPO ({self.operator_id}) ===")
-        while True:
+        while self.ejecutando:
             try:
                 print("\nOpciones:")
                 print("1. Solicitar riego en una estación")
@@ -160,7 +172,7 @@ class FieldOperator:
                     if ws_id and duracion_str.isdigit():
                         self.solicitar_riego(ws_id, int(duracion_str))
                     else:
-                        print("[ERROR] Parámetros no válidos.")
+                        print("[ERROR FO] Parámetros introducidos no válidos.")
                 elif opcion == '2':
                     print("Saliendo de la aplicación del operario...")
                     break
@@ -179,7 +191,7 @@ if __name__ == "__main__":
     fichero = sys.argv[4] if len(sys.argv) > 4 else None
 
     operario = FieldOperator(ip_kafka, puerto_kafka, id_operador)
-    time.sleep(1) # Tiempo de estabilización con Kafka
+    time.sleep(1)  # Estabilización con Kafka
 
     if fichero:
         operario.procesar_fichero(fichero)
