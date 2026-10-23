@@ -4,7 +4,7 @@ import time
 import threading
 import json
 from kafka import KafkaConsumer, KafkaProducer
-from protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
+from WM_Central.protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
 
 def deserializar_json(mensaje_bytes):
     """Convierte los bytes recibidos de Kafka en un diccionario JSON."""
