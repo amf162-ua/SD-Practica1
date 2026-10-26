@@ -6,7 +6,7 @@ import time
 import os
 from kafka import KafkaConsumer, KafkaProducer
 from protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
-from WM_Central.database import init_db, obtener_estaciones, guardar_o_actualizar_estacion
+from database import init_db, obtener_estaciones, guardar_o_actualizar_estacion
 
 # Intentar cargar Tkinter sólo si hay entorno gráfico
 GUI_DISPONIBLE = False
