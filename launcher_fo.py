@@ -71,16 +71,21 @@ class FOLauncher:
         op_id = self.entry_op_id.get().strip()
         fichero = self.entry_fichero.get().strip()
 
-        cmd = [sys.executable, "WM_FO.py", ip_k, puerto_k, op_id]
+        fo_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WM_FO")
+        script_fo = os.path.join(fo_dir, "WM_FO.py")
+
+        cmd = [sys.executable, script_fo, ip_k, puerto_k, op_id]
         
         # Solo adjunta el fichero si el usuario lo ha escrito explícitamente y el archivo existe
-        if fichero and os.path.exists(fichero):
-            cmd.append(fichero)
+        if fichero:
+            ruta_fichero = fichero if os.path.isabs(fichero) else os.path.join(fo_dir, fichero)
+            if os.path.exists(ruta_fichero):
+                cmd.append(ruta_fichero)
 
         if sys.platform == "win32":
-            p = subprocess.Popen(["cmd.exe", "/c", "start"] + cmd)
+            p = subprocess.Popen(["cmd.exe", "/c", "start", f"Operario_{op_id}"] + cmd, cwd=fo_dir)
         else:
-            p = subprocess.Popen(["x-terminal-emulator", "-e"] + cmd)
+            p = subprocess.Popen(["x-terminal-emulator", "-e"] + cmd, cwd=fo_dir)
 
         self.procesos.append(p)
 

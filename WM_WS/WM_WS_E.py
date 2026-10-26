@@ -3,8 +3,14 @@ import sys
 import time
 import threading
 import json
+import os
 from kafka import KafkaConsumer, KafkaProducer
-from WM_Central.protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
+
+DIRECTORIO_ACTUAL = os.path.dirname(os.path.abspath(__file__))
+if DIRECTORIO_ACTUAL not in sys.path:
+    sys.path.insert(0, DIRECTORIO_ACTUAL)
+
+from protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
 
 def deserializar_json(mensaje_bytes):
     """Convierte los bytes recibidos de Kafka en un diccionario JSON."""
@@ -18,7 +24,10 @@ def deserializar_json(mensaje_bytes):
 
 class WateringStationEngine:
     def __init__(self, ip_kafka: str, puerto_kafka: str, ip_monitor: str, puerto_monitor: int, ws_id_param: str = None):
-        self.bootstrap_kafka = f"{ip_kafka}:{puerto_kafka}"
+        if ":" in str(ip_kafka):
+            self.bootstrap_kafka = str(ip_kafka)
+        else:
+            self.bootstrap_kafka = f"{ip_kafka}:{puerto_kafka}"
         self.ip_monitor = ip_monitor
         self.puerto_monitor = puerto_monitor
         

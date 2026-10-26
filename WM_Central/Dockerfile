@@ -4,4 +4,4 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 EXPOSE 5000
-CMD ["python", "WM_Central.py", "5000"]
+CMD ["python", "-u", "WM_Central.py"]

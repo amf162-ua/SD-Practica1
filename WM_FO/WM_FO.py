@@ -16,7 +16,10 @@ def deserializar_json(mensaje_bytes):
 
 class FieldOperator:
     def __init__(self, ip_kafka: str, puerto_kafka: str, operator_id: str):
-        self.bootstrap_server = f"{ip_kafka}:{puerto_kafka}"
+        if ":" in str(ip_kafka):
+            self.bootstrap_server = str(ip_kafka)
+        else:
+            self.bootstrap_server = f"{ip_kafka}:{puerto_kafka}"
         self.operator_id = operator_id
         
         self.producer = None

@@ -2,7 +2,13 @@ import socket
 import sys
 import time
 import threading
-from WM_Central.protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
+import os
+
+DIRECTORIO_ACTUAL = os.path.dirname(os.path.abspath(__file__))
+if DIRECTORIO_ACTUAL not in sys.path:
+    sys.path.insert(0, DIRECTORIO_ACTUAL)
+
+from protocolo import empaquetar, desempaquetar, ACK, NACK, ENQ, EOT
 
 class WateringStationMonitor:
     def __init__(self, puerto_engine: int, ip_central: str, puerto_central: int, ws_id: str):

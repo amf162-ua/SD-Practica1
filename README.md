@@ -27,7 +27,7 @@ SD-Practica1/
 │   ├── WM_FO.py            # Aplicación de solicitudes de riego
 │   └── servicios.txt       # Fichero de prueba de servicios
 └── prompts/                 # Transparencia en el uso de asistentes de IA
-    └── prompts_usados.txt
+    └── prompts.txt
 ```
 
 ---

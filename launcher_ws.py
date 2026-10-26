@@ -87,20 +87,24 @@ class WSLauncher:
             messagebox.showwarning("Error", "Faltan datos de la estación.")
             return
 
+        ws_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WM_WS")
+        script_m = os.path.join(ws_dir, "WM_WS_M.py")
+        script_e = os.path.join(ws_dir, "WM_WS_E.py")
+
         # 1. Abrir Monitor en consola propia
-        cmd_m = [sys.executable, "WM_WS_M.py", puerto_ws, ip_c, puerto_c, ws_id]
+        cmd_m = [sys.executable, script_m, puerto_ws, ip_c, puerto_c, ws_id]
         if sys.platform == "win32":
-            p_m = subprocess.Popen(["cmd.exe", "/c", "start"] + cmd_m)
+            p_m = subprocess.Popen(["cmd.exe", "/c", "start", f"Monitor_{ws_id}"] + cmd_m, cwd=ws_dir)
         else:
-            p_m = subprocess.Popen(["x-terminal-emulator", "-e"] + cmd_m)
+            p_m = subprocess.Popen(["x-terminal-emulator", "-e"] + cmd_m, cwd=ws_dir)
         self.procesos.append(p_m)
 
         # 2. Abrir Engine en consola propia
-        cmd_e = [sys.executable, "WM_WS_E.py", ip_k, puerto_k, "127.0.0.1", puerto_ws, ws_id]
+        cmd_e = [sys.executable, script_e, ip_k, puerto_k, "127.0.0.1", puerto_ws, ws_id]
         if sys.platform == "win32":
-            p_e = subprocess.Popen(["cmd.exe", "/c", "start"] + cmd_e)
+            p_e = subprocess.Popen(["cmd.exe", "/c", "start", f"Engine_{ws_id}"] + cmd_e, cwd=ws_dir)
         else:
-            p_e = subprocess.Popen(["x-terminal-emulator", "-e"] + cmd_e)
+            p_e = subprocess.Popen(["x-terminal-emulator", "-e"] + cmd_e, cwd=ws_dir)
         self.procesos.append(p_e)
 
         # Auto-incrementar para la siguiente estación

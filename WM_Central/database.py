@@ -1,7 +1,6 @@
 import sqlite3
 import os
-
-DB_PATH = os.environ.get("DB_PATH", "water_management.db")
+DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "water_management.db"))
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
