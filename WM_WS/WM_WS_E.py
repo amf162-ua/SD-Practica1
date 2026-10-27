@@ -146,7 +146,7 @@ class WateringStationEngine:
                 return
             self.regando = True
 
-        print(f"\n[ENGINE {self.ws_id}] ⚡ ELECTROVÁLVULA ABIERTA — Riego iniciado ({duracion_segundos}s) por {operator_id}")
+        print(f"\n[ENGINE {self.ws_id}] ELECTROVÁLVULA ABIERTA — Riego iniciado ({duracion_segundos}s) por {operator_id}")
 
         volumen_acumulado   = 0.0
         segundos_transcurridos = 0
@@ -178,7 +178,7 @@ class WateringStationEngine:
             self.regando = False
             estado_final = self.estado_salud
 
-        print(f"[ENGINE {self.ws_id}] ⛔ ELECTROVÁLVULA CERRADA — Riego finalizado.\n")
+        print(f"[ENGINE {self.ws_id}] ELECTROVÁLVULA CERRADA — Riego finalizado.\n")
 
         # Determinar motivo de finalización
         if estado_final != "OK":
@@ -257,7 +257,7 @@ class WateringStationEngine:
                     with self.lock:
                         self.estado_salud = "KO"
                         self.regando = False
-                    print(f"\n[⚠ ENGINE {self.ws_id}] Avería/Fuga simulada. Estado → KO. Riego abortado.")
+                    print(f"\n[ENGINE {self.ws_id}] Avería/Fuga simulada. Estado → KO. Riego abortado.")
                 elif entrada == 'ok':
                     with self.lock:
                         self.estado_salud = "OK"

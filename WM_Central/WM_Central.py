@@ -551,7 +551,7 @@ class WM_Central:
                     guardar_o_actualizar_estacion(ws_id, estado="FUGA")
                     if self.dashboard:
                         self.dashboard.actualizar_estacion(ws_id, "FUGA")
-                    self.log(f"[⚠ FUGA DETECTADA] Estación {ws_id} reporta fuga. Riego detenido.")
+                    self.log(f"[FUGA DETECTADA] Estación {ws_id} reporta fuga. Riego detenido.")
 
                     conn.send(empaquetar("OK#FUGA_REGISTRADA"))
                     ack = conn.recv(1024)
