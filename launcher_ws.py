@@ -34,7 +34,7 @@ class WSLauncher:
 
         ttk.Label(frame_net, text="IP/Host Central:").grid(row=0, column=0, padx=5, pady=2, sticky=tk.W)
         self.entry_ip_c = ttk.Entry(frame_net, width=20)
-        self.entry_ip_c.insert(0, "127.0.0.1")
+        self.entry_ip_c.insert(0, "44.204.33.94")
         self.entry_ip_c.grid(row=0, column=1, padx=5, pady=2)
 
         ttk.Label(frame_net, text="Puerto Central:").grid(row=0, column=2, padx=5, pady=2, sticky=tk.W)
@@ -44,7 +44,7 @@ class WSLauncher:
 
         ttk.Label(frame_net, text="IP/Host Kafka:").grid(row=1, column=0, padx=5, pady=2, sticky=tk.W)
         self.entry_ip_k = ttk.Entry(frame_net, width=20)
-        self.entry_ip_k.insert(0, "127.0.0.1")
+        self.entry_ip_k.insert(0, "44.204.33.94")
         self.entry_ip_k.grid(row=1, column=1, padx=5, pady=2)
 
         ttk.Label(frame_net, text="Puerto Kafka:").grid(row=1, column=2, padx=5, pady=2, sticky=tk.W)
