@@ -93,3 +93,4 @@ SD-Practica1/
 - `ko`: Aborta el riego activo por fuga, pasa a estado **`FUGA` (ROJO)** y notifica a Central.
 - `ok`: Restablece la estación a **`DISPONIBLE` (VERDE)**.
 - `stop`: Detiene manualmente el riego en curso.
+
