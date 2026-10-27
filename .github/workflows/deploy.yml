@@ -21,5 +21,6 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: .
+          file: ./WM_Central/Dockerfile
           push: true
           tags: ${{ secrets.DOCKER_USERNAME }}/practica-aws:latest
