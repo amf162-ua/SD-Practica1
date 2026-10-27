@@ -2,6 +2,9 @@ import sys
 import time
 import json
 import threading
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 from kafka import KafkaConsumer, KafkaProducer
 
 def deserializar_json(mensaje_bytes):
