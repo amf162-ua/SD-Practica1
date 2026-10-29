@@ -1,0 +1,43 @@
+# PC LAB 2: estaciones de riego (cada WS = un Monitor + un Engine).
+#
+#   cd deploy/lab
+#   cp .env.example .env               # IP de la EC2 (CENTRAL y Kafka)
+#   docker compose -f compose.ws.yml up -d --build
+#   docker logs -f ws1-monitor         # pantalla del Monitor
+#   docker attach ws1-engine           # menú del Engine (salir sin pararlo: Ctrl+P Ctrl+Q)
+#
+# Para añadir otra estación, copiad el bloque ws2-* cambiando nombres, ID y ubicación.
+
+name: wm-ws
+
+x-ws: &ws
+  build:
+    context: ../..
+    dockerfile: WM_WS/Dockerfile
+  image: wm-ws
+  restart: unless-stopped
+  env_file: .env
+
+x-engine: &engine
+  <<: *ws
+  stdin_open: true
+  tty: true
+
+services:
+  ws1-monitor:
+    <<: *ws
+    container_name: ws1-monitor
+    command: python -u WM_WS/WM_WS_M.py 6000 ${CENTRAL_HOST} ${CENTRAL_PORT} WS_01 Parque de El Palmeral
+  ws1-engine:
+    <<: *engine
+    container_name: ws1-engine
+    command: python -u WM_WS/WM_WS_E.py ${KAFKA_HOST} ${KAFKA_PORT} ws1-monitor 6000
+
+  ws2-monitor:
+    <<: *ws
+    container_name: ws2-monitor
+    command: python -u WM_WS/WM_WS_M.py 6000 ${CENTRAL_HOST} ${CENTRAL_PORT} WS_02 Jardines de Canalejas
+  ws2-engine:
+    <<: *engine
+    container_name: ws2-engine
+    command: python -u WM_WS/WM_WS_E.py ${KAFKA_HOST} ${KAFKA_PORT} ws2-monitor 6000

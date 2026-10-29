@@ -21,3 +21,5 @@ env/
 # Archivos de entorno y credenciales
 .env
 *.env
+# Datos de CENTRAL en ejecución local
+WM_Central/data/

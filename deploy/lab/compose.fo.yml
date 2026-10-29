@@ -1,0 +1,31 @@
+# PC LAB 1: aplicaciones de operario (WM_FO).
+#
+#   cd deploy/lab
+#   cp .env.example .env               # IP de la EC2 (Kafka)
+#   docker compose -f compose.fo.yml up -d --build
+#   docker attach fo1                  # menú del operario (salir sin pararlo: Ctrl+P Ctrl+Q)
+#
+# fo2 ejecuta primero el fichero WM_FO/servicios.txt y después muestra el menú.
+
+name: wm-fo
+
+x-fo: &fo
+  build:
+    context: ../..
+    dockerfile: WM_FO/Dockerfile
+  image: wm-fo
+  env_file: .env
+  stdin_open: true
+  tty: true
+  volumes:
+    - ../../WM_FO/servicios.txt:/app/servicios.txt:ro
+
+services:
+  fo1:
+    <<: *fo
+    container_name: fo1
+    command: python -u WM_FO/WM_FO.py ${KAFKA_HOST} ${KAFKA_PORT} OP_01
+  fo2:
+    <<: *fo
+    container_name: fo2
+    command: python -u WM_FO/WM_FO.py ${KAFKA_HOST} ${KAFKA_PORT} OP_02 /app/servicios.txt

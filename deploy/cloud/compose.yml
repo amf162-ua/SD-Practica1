@@ -1,0 +1,74 @@
+# Parte CLOUD (instancia EC2 de AWS): Kafka + WM_Central (con su BD SQLite).
+#
+#   cd deploy/cloud
+#   cp .env.example .env        # y poner en KAFKA_PUBLIC_HOST la IP pública de la EC2
+#   docker compose up -d --build
+#
+# Puertos que hay que abrir en el Security Group de la EC2:
+#   9092 Kafka · 5000 sockets de CENTRAL · 8080 panel web de CENTRAL
+
+name: wm-cloud
+
+services:
+  broker:
+    image: apache/kafka:3.9.0
+    hostname: broker
+    container_name: broker
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # INTERNO: lo usa CENTRAL dentro de Docker · EXTERNO: lo usan los PCs del laboratorio
+      KAFKA_LISTENERS: INTERNO://broker:29092,CONTROLLER://broker:29093,EXTERNO://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNO://broker:29092,EXTERNO://${KAFKA_PUBLIC_HOST:?Pon la IP pública en .env}:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNO:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNO:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNO
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_RETENTION_HOURS: 12
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --list"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  # Crea los tópicos del sistema una vez que el broker está sano y termina
+  init-topics:
+    image: apache/kafka:3.9.0
+    depends_on:
+      broker:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for t in wm-solicitudes wm-central wm-eventos-ws wm-telemetria; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --create --if-not-exists --topic $$t --partitions 1 --replication-factor 1
+        done
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server broker:29092 --list
+
+  central:
+    build:
+      context: ../..
+      dockerfile: WM_Central/Dockerfile
+    container_name: wm-central
+    restart: unless-stopped
+    depends_on:
+      init-topics:
+        condition: service_completed_successfully
+    ports:
+      - "5000:5000"
+      - "8080:8080"
+    environment:
+      KAFKA_BROKER: broker:29092
+    volumes:
+      - central-data:/data
+
+volumes:
+  central-data:
