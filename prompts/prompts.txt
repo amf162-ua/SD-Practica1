@@ -1,0 +1,103 @@
+================================================================================
+REGISTRO DE PROMPTS - PROYECTO WATERMANAGEMENT (SISTEMAS DISTRIBUIDOS 26/27)
+Estudiantes: Àlex Morell Far (54375989X) e Iker Roig Mengual (74019728R)
+================================================================================
+
+Este documento contiene el historial estructurado de prompts utilizados con modelos de Inteligencia
+Artificial para el diseño, implementación, depuración y verificación del sistema distribuido
+WaterManagement Release 1.
+
+--------------------------------------------------------------------------------
+PROMPT 1: ARQUITECTURA DISTRIBUIDA Y SELECCIÓN DE PARADIGMAS
+--------------------------------------------------------------------------------
+"Estamos diseñando un sistema distribuido en Python para la gestión inteligente del riego urbano
+(WaterManagement) según el enunciado de la asignatura Sistemas Distribuidos.
+Requisitos:
+- Arquitectura híbrida: comunicación síncrona/latidos mediante Sockets TCP puros y streaming de
+  eventos desacoplado mediante Apache Kafka.
+- Módulos a implementar: WM_Central (Cloud), WM_WS_M (Monitor de estación), WM_WS_E (Engine con
+  electroválvula y caudalímetro) y WM_FO (Operarios de campo).
+- Persistencia obligatoria en SQLite.
+- Despliegue en la nube (AWS EC2 / Railway) para Central + Kafka + BD, y PCs de laboratorio
+  para estaciones y operarios.
+Diseña el esquema de comunicación detallando qué flujos deben ir por sockets TCP y cuáles por
+tópicos de Kafka para garantizar desacoplamiento y alta resiliencia."
+
+--------------------------------------------------------------------------------
+PROMPT 2: PROTOCOLO DE COMUNICACIÓN EN SOCKETS (<STX><DATA><ETX><LRC>)
+--------------------------------------------------------------------------------
+"Implementa en Python el protocolo de mensajería sobre sockets TCP recomendado en la guía técnica:
+- Formato de trama: <STX><DATA><ETX><LRC> donde STX=0x02, ETX=0x03, EOT=0x04, ENQ=0x05, ACK=0x06, NACK=0x15.
+- LRC debe ser el XOR byte a byte de los bytes de DATA codificados en UTF-8.
+- Control de flujo: Inicio con saludo ENQ -> ACK, confirmación ACK/NACK por trama (hasta 3 reintentos si NACK o fallo de checksum), y cierre limpio con EOT.
+- Los campos en DATA van separados por '#'.
+- Importante: TCP es un flujo continuo de bytes (stream), por lo que un recv() puede devolver datos fragmentados o múltiples tramas juntas. Diseña una clase envoltorio (CanalTramas) que mantenga un búfer interno y extraiga tramas completas sin perder información."
+
+--------------------------------------------------------------------------------
+PROMPT 3: LÓGICA DE CONTROL CENTRAL (WM_Central) Y BASE DE DATOS SQLITE
+--------------------------------------------------------------------------------
+"Desarrolla el módulo WM_Central.py y la capa de base de datos database.py:
+1. Argumentos CLI: <puerto_sockets> <ip_broker> [<puerto_broker>] [--panel <puerto>] [--db <ruta>]
+2. Base de datos SQLite: tablas 'estaciones' (id, ubicacion, bloqueada, fecha_alta), 'operarios' (id, nombre) y 'riegos' (histórico de auditoría: order_id, ws_id, operator_id, fin, segundos, volumen_l, motivo).
+3. Reglas de estado de estación: Al arrancar, consulta la BD y carga las estaciones como DESCONECTADAS (gris). El estado visible se calcula dinámicamente:
+   - Si no está conectada -> DESCONECTADA
+   - Si salud == KO -> FUGA (rojo)
+   - Si bloqueada por CENTRAL -> FUERA_SERVICIO (naranja)
+   - Si regando -> REGANDO (verde parpadeante)
+   - En reposo -> DISPONIBLE (verde)
+4. Autenticación y Registro: Las WS deben autenticarse por socket. Si una WS no está registrada previamente, se deniega la autenticación (KO#WS_NO_REGISTRADA). Permitir también el registro desde panel o trama REGRO#ws_id#ubicacion.
+5. Concurrencia: Servidor multihilo para atender conexiones de monitores en paralelo, hilo para consumidor de Kafka, hilo para publicación de estado de red cada 2s, y sincronización estricta mediante RLock para proteger el estado en memoria."
+
+--------------------------------------------------------------------------------
+PROMPT 4: ESTACIÓN DE RIEGO (WM_WS_M Y WM_WS_E) Y SIMULACIÓN DE HARDWARE
+--------------------------------------------------------------------------------
+"Implementa la estación de riego dividida en dos componentes desacoplados:
+1. WM_WS_M (Monitor):
+   - Actúa como cliente socket de CENTRAL (envía AUTH y latidos de estado cada 2s).
+   - Actúa como servidor socket para el Engine. Al conectarse el Engine, le asigna su WS_ID.
+   - Envía un mensaje SALUD cada segundo al Engine. Si el Engine responde KO o no responde en 3s, notifica inmediatamente a CENTRAL (ESTADO#ws_id#KO) simulando la detección de una avería/fuga.
+2. WM_WS_E (Engine):
+   - Se conecta por socket a su Monitor para recibir su ID y responder al chequeo de SALUD.
+   - Conecta a Kafka para recibir órdenes de CENTRAL (REGAR, PARAR, BLOQUEAR, ACTIVAR) y publicar telemetría y eventos.
+   - Simula electroválvula y caudalímetro nominal (~15 L/min con jitter). Durante el riego publica telemetría cada segundo.
+   - Menú interactivo en consola: 'r <seg>' (riego manual), 'p' (parar), 'k' (simular avería/KO), 'o' (resolver avería/OK), 'e' (estado).
+   - Resiliencia: Si el Monitor se cae, el Engine finaliza el riego en curso, marca su estado como AVERIADA y deniega cualquier nuevo riego manual."
+
+--------------------------------------------------------------------------------
+PROMPT 5: APLICACIÓN DE OPERARIOS DE CAMPO (WM_FO)
+--------------------------------------------------------------------------------
+"Desarrolla la aplicación de consola WM_FO para los jardineros:
+- Argumentos CLI: <ip_broker> <puerto_broker> <id_operador> [<fichero_servicios>]
+- Debe suscribirse a wm-central (filtrando solo sus notificaciones por order_id y el estado de la red) y a wm-telemetria para recibir caudal y volumen acumulado en tiempo real durante sus riegos.
+- Menú con opciones: 1. Solicitar riego (pide WS y duración), 2. Ver estaciones y últimos riegos, 3. Ejecutar fichero batch de servicios, 0. Salir.
+- Modo batch: Lee un fichero de texto (<WS_ID> <segundos>), envía el primer servicio, espera a su conclusión (éxito o rechazo), realiza una pausa obligatoria de 4 segundos y continúa con el siguiente.
+- Resiliencia: Si CENTRAL está caída o no responde, debe mostrar el error controlado 'Imposible conectar con WM_Central'. Si el operario se cierra y reabre, debe poder ver en el histórico el resultado de su servicio."
+
+--------------------------------------------------------------------------------
+PROMPT 6: PANEL WEB DE MONITORIZACIÓN Y GOBIERNO (CENTRAL)
+--------------------------------------------------------------------------------
+"Crea un cuadro de mandos web para WM_Central sin dependencias externas pesadas (usando http.server estándar de Python y Vanilla JS/CSS moderno):
+- Tarjetas visuales de cada WS con sus colores normativos: Available (verde), Watering (verde parpadeante con animación CSS, caudal, volumen acumulado, tiempo transcurrido y operario), Leak (rojo), Out of Service (naranja con la leyenda explícita 'Out of Service') y Disconnected (gris).
+- Selector y controles para enviar de forma arbitraria órdenes a una o a todas las WS (*): Iniciar riego, Bloquear y Activar.
+- Formularios en tiempo real para dar de alta nuevas estaciones y nuevos operarios en la base de datos SQLite.
+- Tabla con los últimos riegos completados obtenidos de SQLite.
+- Consola inferior con el visor de trazas en tiempo real de sockets y Kafka."
+
+--------------------------------------------------------------------------------
+PROMPT 7: ANÁLISIS DE RESILIENCIA Y RECUPERACIÓN ANTE CAÍDAS
+--------------------------------------------------------------------------------
+"Verifica exhaustivamente el comportamiento del sistema ante caídas abruptas (Ctrl+C o docker stop/kill):
+1. Caída de Monitor (WM_WS_M): CENTRAL debe marcar la estación como DESCONECTADA en <=6s. El Engine debe cortar el riego si estaba activo, pasar a estado AVERIADA y rechazar riegos manuales.
+2. Caída de Engine (WM_WS_E): El Monitor debe detectar timeout en 3s y notificar avería a CENTRAL. CENTRAL marca la WS como FUGA (rojo), aborta el riego y remite el resumen acumulado al operario y a la BD SQLite (sin perder los litros regados). Al reiniciar el Engine, la estación recupera la salud OK y vuelve a DISPONIBLE.
+3. Caída de FO durante riego: El Engine continúa regando hasta completar la duración. CENTRAL persiste el resultado final en SQLite y lo distribuye para que el operario lo consulte al recuperarse.
+4. Caída de WM_Central: Las WS activas terminan su ciclo de riego y quedan a la espera. Al reiniciar CENTRAL, recarga las WS de SQLite en estado DESCONECTADA hasta que los Monitores se reconectan automáticamente sin necesidad de reiniciar las estaciones."
+
+--------------------------------------------------------------------------------
+PROMPT 8: CONTENERIZACIÓN CON DOCKER Y DESPLIEGUE DISTRIBUIDO
+--------------------------------------------------------------------------------
+"Genera los Dockerfiles y manifiestos de Docker Compose para desplegar el escenario distribuido:
+- deploy/cloud/compose.yml: Apache Kafka 3.9 en modo KRaft (sin ZooKeeper) con listeners interno (red Docker) y externo (IP pública para los PCs de laboratorio), servicio init-topics para crear tópicos automáticamente, y wm-central con volumen persistente para SQLite.
+- deploy/lab/compose.ws.yml: Dos estaciones completas (ws1-monitor, ws1-engine, ws2-monitor, ws2-engine) configuradas mediante variables de entorno (.env).
+- deploy/lab/compose.fo.yml: Dos operarios (fo1 interactivo con terminal asignada y fo2 en ejecución batch de servicios.txt).
+- .github/workflows/deploy-aws.yml: Pipeline de CI/CD para compilar código Python y desplegar automáticamente en una instancia AWS EC2 mediante SSH."
+================================================================================

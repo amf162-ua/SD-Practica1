@@ -5,7 +5,7 @@ Uso:  python WM_FO.py <ip_broker> <puerto_broker> <id_operador> [<fichero_servic
 
   - Solicita riegos a CENTRAL por Kafka y muestra cada paso (recibida, autorizada,
     denegada), la telemetría de la estación mientras riega y el resumen final.
-  - Muestra el estado de todas las estaciones (CENTRAL lo publica cada 2 s).
+  - Muestra el estado de todas las estaciones y el histórico de riegos (CENTRAL lo publica cada 2 s).
   - Con un fichero de servicios los solicita en orden, esperando 4 s entre uno y otro.
     Formato de cada línea: <WS_ID> <duración_en_segundos>   (# para comentarios)
 """
@@ -26,7 +26,7 @@ PAUSA_ENTRE_SERVICIOS = 4
 MENU = """
 === OPERARIO {id} ===
   1  Solicitar riego
-  2  Ver estaciones
+  2  Ver estaciones y últimos riegos
   3  Ejecutar fichero de servicios
   0  Salir"""
 
@@ -40,6 +40,7 @@ class Operario:
         self.servidor_kafka = servidor_kafka
         self.id = operator_id
         self.estaciones = []          # última foto publicada por CENTRAL
+        self.ultimos_riegos = []      # últimos riegos registrados en CENTRAL
         self.orden = None             # solicitud en curso: {'order_id', 'ws_id'}
         self.decidida = threading.Event()    # CENTRAL ha autorizado o denegado
         self.terminada = threading.Event()
@@ -57,7 +58,8 @@ class Operario:
             if topic == K.TOPIC_CENTRAL:
                 # Las ORDEN van dirigidas a los Engines: el operario las ignora
                 if msg.get('tipo') == K.TIPO_ESTADO_RED:
-                    self.estaciones = msg['estaciones']
+                    self.estaciones = msg.get('estaciones', [])
+                    self.ultimos_riegos = msg.get('ultimos_riegos', [])
                 elif msg.get('tipo') == K.TIPO_NOTIFICACION and de_mi_orden:
                     self._notificacion(msg)
             elif topic == K.TOPIC_TELEMETRIA and de_mi_orden:
@@ -94,7 +96,7 @@ class Operario:
 
         # Primero esperamos a que CENTRAL decida y luego a que termine el riego
         if not self.decidida.wait(TIMEOUT_AUTORIZACION):
-            log("[FO] CENTRAL no ha respondido a la solicitud")
+            log("[FO] Imposible conectar con WM_Central (CENTRAL no ha respondido a la solicitud)")
         elif not self.terminada.wait(duracion + MARGEN_FIN):
             log("[FO] No se ha recibido el resumen final del riego")
         self.orden = None
@@ -102,9 +104,20 @@ class Operario:
     def ver_estaciones(self):
         if not self.estaciones:
             print("  (aún no se ha recibido el estado de la red desde CENTRAL)")
-        for ws in self.estaciones:
-            extra = f" | {ws['caudal']} L/min, {ws['volumen']} L, {ws['operario']}" if ws['estado'] == 'REGANDO' else ''
-            print(f"  {ws['id']:<8} {ws['estado']:<15} {ws['ubicacion']}{extra}")
+        else:
+            print("\n  --- Estado de las Estaciones ---")
+            for ws in self.estaciones:
+                extra = f" | {ws['caudal']} L/min, {ws['volumen']} L, {ws['operario']}" if ws['estado'] == 'REGANDO' else ''
+                print(f"  {ws['id']:<8} {ws['estado']:<15} {ws['ubicacion']}{extra}")
+
+        if self.ultimos_riegos:
+            print("\n  --- Últimos Riegos Realizados (BD) ---")
+            for r in self.ultimos_riegos:
+                fin = r.get('fin', '')
+                hora = fin[11:] if len(fin) >= 19 else fin
+                print(f"  [{hora}] {r.get('ws_id')} | Operario: {r.get('operator_id')} | "
+                      f"{r.get('segundos')}s | {r.get('volumen_l')}L | Motivo: {r.get('motivo')}")
+        print()
 
     def ejecutar_fichero(self, ruta):
         try:

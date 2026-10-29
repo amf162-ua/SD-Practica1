@@ -21,14 +21,15 @@
   h2 { margin: 0 0 10px; font-size: 14px; color: #93c5fd; text-transform: uppercase; letter-spacing: .04em; }
 
   .resumen { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-  .resumen span { padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+  .resumen span { padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; color: #fff; }
 
   .estaciones { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
-  .ws { border-radius: 8px; padding: 10px 12px; cursor: pointer; color: #fff; border: 3px solid transparent; min-height: 118px; }
+  .ws { border-radius: 8px; padding: 10px 12px; cursor: pointer; color: #fff; border: 3px solid transparent; min-height: 124px; transition: transform 0.1s ease; }
+  .ws:hover { transform: translateY(-2px); }
   .ws.sel { border-color: #fff; }
   .ws b { font-size: 16px; }
   .ws .ubi { font-size: 12px; opacity: .9; }
-  .ws .est { font-weight: 700; margin: 6px 0 4px; font-size: 13px; }
+  .ws .est { font-weight: 700; margin: 6px 0 4px; font-size: 13px; text-transform: uppercase; }
   .ws .dato { font-size: 12px; font-family: Consolas, monospace; }
   .DISPONIBLE { background: var(--verde); }
   .REGANDO { background: var(--verde); animation: parpadeo 1s steps(1, end) infinite; }
@@ -37,7 +38,7 @@
   .FUERA_SERVICIO { background: var(--naranja); }
   .DESCONECTADA { background: var(--gris); }
 
-  .ordenes { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  .ordenes { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
   input, select { background: var(--fondo); color: var(--texto); border: 1px solid var(--borde); border-radius: 6px; padding: 6px 8px; font: inherit; }
   button { border: 0; border-radius: 6px; padding: 7px 12px; font: inherit; font-weight: 600; color: #fff; background: var(--acento); cursor: pointer; }
   button.regar { background: var(--verde); } button.bloquear { background: var(--naranja); } button.activar { background: #2563eb; }
@@ -46,7 +47,7 @@
   form { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   form input { flex: 1 1 100px; min-width: 0; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  td, th { text-align: left; padding: 3px 4px; border-bottom: 1px solid var(--borde); }
+  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--borde); }
   #registro { background: #020617; color: #7dd3fc; font: 12px/1.45 Consolas, monospace; height: 260px; overflow-y: auto; padding: 8px; border-radius: 6px; white-space: pre-wrap; margin: 0; }
   .lateral { display: grid; gap: 16px; align-content: start; }
   .ancho { grid-column: 1 / -1; }
@@ -59,7 +60,7 @@
 </header>
 <main>
   <section>
-    <h2>Estaciones de riego</h2>
+    <h2>Estaciones de riego (Watering Stations)</h2>
     <div class="resumen" id="resumen"></div>
     <div class="estaciones" id="estaciones"></div>
 
@@ -79,7 +80,7 @@
     <section>
       <h2>Alta de estación</h2>
       <form onsubmit="return alta(event, '/api/estaciones', {id: 'ws-id', ubicacion: 'ws-ubi'})">
-        <input id="ws-id" placeholder="WS_05" required>
+        <input id="ws-id" placeholder="WS_03" required>
         <input id="ws-ubi" placeholder="Ubicación" required>
         <button>Alta</button>
       </form>
@@ -92,7 +93,7 @@
       <table><tbody id="operarios"></tbody></table>
     </section>
     <section>
-      <h2>Últimos riegos (BD)</h2>
+      <h2>Últimos riegos (BD SQLite)</h2>
       <table>
         <thead><tr><th>Fin</th><th>WS</th><th>Operario</th><th>s</th><th>L</th><th>Motivo</th></tr></thead>
         <tbody id="riegos"></tbody>
@@ -107,8 +108,13 @@
 </main>
 
 <script>
-const ETIQUETAS = {DISPONIBLE: 'Disponible', REGANDO: 'Regando', FUGA: 'Fuga',
-                   FUERA_SERVICIO: 'Fuera de Servicio', DESCONECTADA: 'Desconectada'};
+const ETIQUETAS = {
+  DISPONIBLE: 'Available',
+  REGANDO: 'Watering',
+  FUGA: 'Leak',
+  FUERA_SERVICIO: 'Out of Service',
+  DESCONECTADA: 'Disconnected'
+};
 let seleccion = '*';
 
 const $ = id => document.getElementById(id);
@@ -122,11 +128,13 @@ function tarjeta(ws) {
                <div class="dato">Tiempo: ${ws.segundos}/${ws.duracion} s</div>
                <div class="dato">Operario: ${esc(ws.operario)}</div>`;
   } else {
-    detalle = `<div class="dato">Caudal: 0 L/min</div>`;
+    detalle = `<div class="dato">Caudal: 0.0 L/min</div>
+               <div class="dato">Volumen: ${ws.volumen ? ws.volumen + ' L' : '0.0 L'}</div>`;
   }
+  const estadoTexto = ws.estado === 'FUERA_SERVICIO' ? 'Out of Service' : ETIQUETAS[ws.estado];
   return `<div class="ws ${ws.estado} ${ws.id === seleccion ? 'sel' : ''}" onclick="seleccionar('${esc(ws.id)}')">
             <b>${esc(ws.id)}</b><div class="ubi">${esc(ws.ubicacion)}</div>
-            <div class="est">${ETIQUETAS[ws.estado]}</div>${detalle}</div>`;
+            <div class="est">${estadoTexto}</div>${detalle}</div>`;
 }
 
 function seleccionar(id) {
@@ -159,7 +167,7 @@ async function refrescar() {
     reg.textContent = d.registro.join('\n');
     if (abajo) reg.scrollTop = reg.scrollHeight;
   } catch (e) {
-    $('conexion').textContent = 'Sin conexión con CENTRAL';
+    $('conexion').textContent = 'Imposible conectar con WM_Central';
   }
 }
 

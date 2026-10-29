@@ -1,9 +1,11 @@
 """
 WM_WS_M - Monitor de la estación de riego.
 
-Uso:  python WM_WS_M.py <puerto_engine> <ip_central> <puerto_central> <ws_id> [<ubicación>]
+Uso:  python WM_WS_M.py <puerto_engine> <ip_central> <puerto_central> <ws_id> [<ubicación>] [--registrar]
 
   - Se conecta a CENTRAL por sockets y se autentica con AUTH#<ws_id>#<ubicación>#<salud>.
+  - Si no está registrada previamente en CENTRAL, CENTRAL denegará la autenticación salvo
+    que se haya dado de alta en su panel web o se pase el argumento opcional --registrar.
   - Ofrece un servidor de sockets al Engine; al conectarse le asigna el ID con ID#<ws_id>
     y después le envía SALUD cada segundo. Si el Engine responde KO o no responde,
     la estación tiene una avería (fuga) y se notifica a CENTRAL con ESTADO#<ws_id>#KO.
@@ -32,11 +34,12 @@ def log(texto):
 
 
 class Monitor:
-    def __init__(self, puerto_engine, ip_central, puerto_central, ws_id, ubicacion):
+    def __init__(self, puerto_engine, ip_central, puerto_central, ws_id, ubicacion, auto_registrar=False):
         self.puerto_engine = puerto_engine
         self.central = (ip_central, puerto_central)
         self.ws_id = ws_id
         self.ubicacion = ubicacion
+        self.auto_registrar = auto_registrar
         # Mientras no haya un Engine conectado y respondiendo OK la estación no es segura
         self.salud = E.SALUD_KO
         self.cambio_salud = threading.Event()
@@ -55,9 +58,15 @@ class Monitor:
                 log(f"[MONITOR {self.ws_id}] Conectando a CENTRAL {self.central[0]}:{self.central[1]}...")
                 canal = CanalTramas(socket.create_connection(self.central, timeout=5), timeout=5)
                 canal.saludar()
+
+                if self.auto_registrar:
+                    reg_resp = separar(canal.peticion(construir('REGISTRO', self.ws_id, self.ubicacion)))
+                    log(f"[MONITOR {self.ws_id}] Petición de alta enviada a CENTRAL: {reg_resp}")
+
                 respuesta = separar(canal.peticion(construir('AUTH', self.ws_id, self.ubicacion, self.salud)))
                 if respuesta[0] != 'OK':
-                    log(f"[MONITOR {self.ws_id}] CENTRAL rechazó la autenticación: {respuesta[1:]}")
+                    log(f"[MONITOR {self.ws_id}] CENTRAL rechazó la autenticación: {respuesta[1:]}. "
+                        f"(Si es WS_NO_REGISTRADA, déla de alta en el panel de CENTRAL o use --registrar)")
                     canal.despedir()
                     time.sleep(5)
                     continue
@@ -68,7 +77,7 @@ class Monitor:
                     self.cambio_salud.clear()
                     canal.peticion(construir('ESTADO', self.ws_id, self.salud))
             except (ErrorProtocolo, OSError) as e:
-                log(f"[MONITOR {self.ws_id}] Sin conexión con CENTRAL ({e}). Reintento en 3s...")
+                log(f"[MONITOR {self.ws_id}] Imposible conectar con WM_Central ({e}). Reintento en 3s...")
                 if canal:
                     canal.cerrar()
                 time.sleep(3)
@@ -113,11 +122,13 @@ class Monitor:
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 5:
-        print('Uso: python WM_WS_M.py <puerto_engine> <ip_central> <puerto_central> <ws_id> [<ubicación>]')
+    args = [a for a in sys.argv[1:] if a != '--registrar']
+    auto_reg = '--registrar' in sys.argv
+    if len(args) < 4:
+        print('Uso: python WM_WS_M.py <puerto_engine> <ip_central> <puerto_central> <ws_id> [<ubicación>] [--registrar]')
         sys.exit(1)
     try:
-        Monitor(int(sys.argv[1]), sys.argv[2], int(sys.argv[3]), sys.argv[4],
-                ' '.join(sys.argv[5:]) or 'Sin ubicación').iniciar()
+        ubi = ' '.join(args[4:]) if len(args) >= 5 else 'Sin ubicación'
+        Monitor(int(args[0]), args[1], int(args[2]), args[3], ubi, auto_registrar=auto_reg).iniciar()
     except KeyboardInterrupt:
         print('\n[MONITOR] Apagado.')

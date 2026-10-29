@@ -209,11 +209,14 @@ class Central:
                 self.log(f"[KAFKA] Mensaje ignorado en {topic} ({e}): {msg}")
 
     def bucle_estado_red(self):
-        """Publica cada 2 s el estado de todas las WS para que los operarios lo vean."""
+        """Publica cada 2 s el estado de todas las WS y los últimos riegos para los operarios."""
         while True:
             time.sleep(2)
-            self.publicar(K.TOPIC_CENTRAL, 'CENTRAL', {'tipo': K.TIPO_ESTADO_RED,
-                                                       'estaciones': self.foto_estaciones()})
+            self.publicar(K.TOPIC_CENTRAL, 'CENTRAL', {
+                'tipo': K.TIPO_ESTADO_RED,
+                'estaciones': self.foto_estaciones(),
+                'ultimos_riegos': self.bd.ultimos_riegos(5)
+            })
 
     # =========================================================================
     # Sockets con los Monitores (WM_WS_M)
@@ -242,6 +245,8 @@ class Central:
                 campos = separar(canal.recibir(byte))
                 if campos[0] == 'AUTH':
                     respuesta, ws = self._autenticar(campos, addr, ws)
+                elif campos[0] == 'REGISTRO' and len(campos) >= 3:
+                    respuesta = self._registrar_estacion(campos[1], campos[2], addr)
                 elif campos[0] == 'ESTADO' and ws and campos[1] == ws.id:
                     respuesta = self._actualizar_salud(ws, campos[2])
                 else:
@@ -265,14 +270,24 @@ class Central:
                 self.log(f"[AUTH] Rechazada {ws_id} desde {addr[0]}: ya hay una estación conectada con ese ID")
                 return construir('KO', 'ID_YA_CONECTADO'), None
             if ws is None:
-                ws = self.estaciones[ws_id] = Estacion(ws_id, ubicacion)
-                self.log(f"[ALTA] Nueva estación {ws_id} registrada ({ubicacion})")
+                self.log(f"[AUTH] Rechazada {ws_id} desde {addr[0]}: estación NO registrada en CENTRAL")
+                return construir('KO', 'WS_NO_REGISTRADA'), None
             ws.ubicacion = ubicacion
             ws.conectada = True
             ws.salud = campos[3] if len(campos) > 3 else E.SALUD_OK
             self.bd.guardar_estacion(ws_id, ubicacion)
             self.log(f"[AUTH] {ws_id} autenticada desde {addr[0]} -> {ws.estado}")
         return construir('OK', ws_id), ws
+
+    def _registrar_estacion(self, ws_id, ubicacion, addr):
+        with self.lock:
+            if ws_id in self.estaciones:
+                self.log(f"[REGISTRO] {ws_id} ya estaba registrada en CENTRAL")
+                return construir('OK', 'YA_REGISTRADA')
+            self.estaciones[ws_id] = Estacion(ws_id, ubicacion)
+            self.bd.guardar_estacion(ws_id, ubicacion)
+            self.log(f"[REGISTRO] Nueva estación {ws_id} ({ubicacion}) dada de alta desde {addr[0]}")
+            return construir('OK', ws_id)
 
     def _actualizar_salud(self, ws, salud):
         with self.lock:

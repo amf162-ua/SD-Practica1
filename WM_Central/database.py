@@ -19,6 +19,11 @@ import time
 OPERARIOS_INICIALES = [('OP_01', 'Operario 1'), ('OP_02', 'Operario 2'),
                        ('OP_03', 'Operario 3'), ('OP_04', 'Operario 4')]
 
+ESTACIONES_INICIALES = [
+    ('WS_01', 'Parque de El Palmeral'),
+    ('WS_02', 'Jardines de Canalejas')
+]
+
 
 class BaseDatos:
     def __init__(self, ruta: str):
@@ -28,7 +33,18 @@ class BaseDatos:
         # Una única conexión compartida por todos los hilos, protegida con un lock
         self.conn = sqlite3.connect(ruta, check_same_thread=False)
         self.lock = threading.Lock()
+        self._migrar_si_procede()
         self._crear_tablas()
+
+    def _migrar_si_procede(self):
+        with self.lock, self.conn:
+            tablas = [r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+            if 'estaciones' in tablas:
+                cols = [c[1] for c in self.conn.execute('PRAGMA table_info(estaciones)').fetchall()]
+                if 'bloqueada' not in cols:
+                    self.conn.execute('ALTER TABLE estaciones ADD COLUMN bloqueada INTEGER NOT NULL DEFAULT 0')
+                if 'fecha_alta' not in cols:
+                    self.conn.execute('ALTER TABLE estaciones ADD COLUMN fecha_alta TEXT NOT NULL DEFAULT ""')
 
     def _crear_tablas(self):
         with self.lock, self.conn:
@@ -56,12 +72,22 @@ class BaseDatos:
             ''')
             if not self.conn.execute('SELECT 1 FROM operarios LIMIT 1').fetchone():
                 self.conn.executemany('INSERT INTO operarios VALUES (?, ?)', OPERARIOS_INICIALES)
+            if not self.conn.execute('SELECT 1 FROM estaciones LIMIT 1').fetchone():
+                ahora = time.strftime('%Y-%m-%d %H:%M:%S')
+                self.conn.executemany(
+                    'INSERT INTO estaciones (id, ubicacion, bloqueada, fecha_alta) VALUES (?, ?, 0, ?)',
+                    [(ws_id, ubi, ahora) for ws_id, ubi in ESTACIONES_INICIALES]
+                )
 
     # -- Estaciones -------------------------------------------------------------
     def estaciones(self) -> list:
         with self.lock:
             filas = self.conn.execute('SELECT id, ubicacion, bloqueada FROM estaciones ORDER BY id')
             return [{'id': f[0], 'ubicacion': f[1], 'bloqueada': bool(f[2])} for f in filas]
+
+    def existe_estacion(self, ws_id: str) -> bool:
+        with self.lock:
+            return self.conn.execute('SELECT 1 FROM estaciones WHERE id = ?', (ws_id,)).fetchone() is not None
 
     def guardar_estacion(self, ws_id: str, ubicacion: str):
         """Da de alta la WS o actualiza su ubicación si ya existía."""

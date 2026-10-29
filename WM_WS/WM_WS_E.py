@@ -8,6 +8,7 @@ Uso:  python WM_WS_E.py <ip_broker> <puerto_broker> <ip_monitor> <puerto_monitor
   - Por Kafka recibe las órdenes de CENTRAL (REGAR, PARAR, BLOQUEAR, ACTIVAR) y
     publica eventos de riego y la telemetría (caudal y volumen) cada segundo.
   - Menú en consola para regar manualmente, parar el riego y simular una fuga (KO).
+  - Si el Monitor se cae, la estación pasa a AVERIADA y no admite más riegos ni manualmente.
 """
 
 import os
@@ -47,12 +48,15 @@ class Engine:
         self.lock = threading.Lock()
         self.salud = E.SALUD_OK
         self.bloqueada = False
+        self.monitor_conectado = False
         self.riego = None            # dict del riego en curso
         self.motivo_parada = None    # si no es None, el bucle de riego debe parar
         self.productor = None
         self.id_asignado = threading.Event()
 
     def estado(self):
+        if not self.monitor_conectado:
+            return "AVERIADA (Sin conexión con el Monitor)"
         if self.salud == E.SALUD_KO:
             return E.FUGA
         if self.bloqueada:
@@ -60,7 +64,8 @@ class Engine:
         return E.REGANDO if self.riego else E.DISPONIBLE
 
     def publicar(self, topic, mensaje):
-        self.productor.send(topic, key=self.ws_id, value={'ws_id': self.ws_id, **mensaje})
+        if self.productor and self.ws_id:
+            self.productor.send(topic, key=self.ws_id, value={'ws_id': self.ws_id, **mensaje})
 
     # -- Conexión con el Monitor (sockets) --------------------------------------
     def bucle_monitor(self):
@@ -75,6 +80,7 @@ class Engine:
                 if self.ws_id not in (None, campos[1]):
                     log(f"[ENGINE] Aviso: el Monitor cambia el ID {self.ws_id} -> {campos[1]}")
                 self.ws_id = campos[1]
+                self.monitor_conectado = True
                 log(f"[ENGINE] Conectado al Monitor. ID asignado: {self.ws_id}")
                 self.id_asignado.set()
 
@@ -86,7 +92,8 @@ class Engine:
                     if canal.recibir(byte) == 'SALUD':
                         canal.enviar(self.salud)
             except (ErrorProtocolo, OSError) as e:
-                log(f"[ENGINE] Sin conexión con el Monitor ({e}). Reintento en 3s...")
+                self.monitor_conectado = False
+                log(f"[ENGINE] Conexión con el Monitor perdida ({e}). Estación AVERIADA. Reintento en 3s...")
                 self.parar_riego(E.FIN_DESCONEXION)
                 if canal:
                     canal.cerrar()
@@ -132,7 +139,9 @@ class Engine:
     # -- Riego ------------------------------------------------------------------
     def iniciar_riego(self, orden):
         with self.lock:
-            if self.riego:
+            if not self.monitor_conectado:
+                motivo = 'estación averiada (sin conexión con el monitor)'
+            elif self.riego:
                 motivo = 'ya hay un riego en curso'
             elif self.salud == E.SALUD_KO:
                 motivo = 'fuga detectada'
@@ -167,7 +176,7 @@ class Engine:
             caudal = round(CAUDAL_NOMINAL + random.uniform(-0.5, 0.5), 2)   # lectura del caudalímetro
             volumen = round(volumen + caudal / 60, 2)
             self.publicar(K.TOPIC_TELEMETRIA, {'order_id': riego['order_id'], 'caudal': caudal,
-                                               'volumen': volumen, 'segundos': segundos})
+                                                'volumen': volumen, 'segundos': segundos})
             log(f"[ENGINE] Regando {segundos}/{riego['duracion']} s | {caudal} L/min | {volumen} L")
 
         with self.lock:
@@ -175,7 +184,7 @@ class Engine:
             self.riego, self.motivo_parada = None, None
         log(f"[ENGINE] <<< ELECTROVÁLVULA CERRADA ({motivo}): {volumen} L en {segundos} s")
         self.publicar(K.TOPIC_EVENTOS_WS, {'evento': 'RIEGO_FINALIZADO', 'order_id': riego['order_id'],
-                                           'motivo': motivo, 'segundos': segundos, 'volumen': volumen})
+                                            'motivo': motivo, 'segundos': segundos, 'volumen': volumen})
 
     # -- Menú de la estación ----------------------------------------------------
     def bucle_menu(self):
@@ -199,10 +208,17 @@ class Engine:
                 else:
                     log("[ENGINE] No hay ningún riego en curso")
             elif cmd == 'r' and len(partes) == 2 and partes[1].isdigit() and self.productor:
-                self.publicar(K.TOPIC_SOLICITUDES, {'order_id': K.nuevo_id('ORD'), 'origen': 'ESTACION',
-                                                    'operator_id': f'{self.ws_id}-LOCAL',
-                                                    'duracion': int(partes[1])})
-                log(f"[ENGINE] Solicitud de riego manual ({partes[1]} s) enviada a CENTRAL")
+                if not self.monitor_conectado:
+                    log("[ENGINE] Solicitud denegada: La estación está AVERIADA (sin conexión con el Monitor)")
+                elif self.bloqueada:
+                    log("[ENGINE] Solicitud denegada: La estación está FUERA DE SERVICIO por orden de CENTRAL")
+                elif self.salud == E.SALUD_KO:
+                    log("[ENGINE] Solicitud denegada: La estación presenta una AVERÍA/FUGA")
+                else:
+                    self.publicar(K.TOPIC_SOLICITUDES, {'order_id': K.nuevo_id('ORD'), 'origen': 'ESTACION',
+                                                        'operator_id': f'{self.ws_id}-LOCAL',
+                                                        'duracion': int(partes[1])})
+                    log(f"[ENGINE] Solicitud de riego manual ({partes[1]} s) enviada a CENTRAL")
             elif cmd == 'e':
                 log(f"[ENGINE] {self.ws_id}: {self.estado()} | salud {self.salud}")
             else:   # Enter vacío o comando desconocido
