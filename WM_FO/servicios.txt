@@ -1,6 +1,6 @@
-# Formato: <WS_ID> <duracion_segundos>
-# El FO enviará cada orden y esperará su conclusión antes de enviar la siguiente.
-# Entre órdenes hay una pausa de 4 segundos (requisito del enunciado, pág. 11).
+# Formato: <WS_ID> <duración_en_segundos>
+# WM_FO solicita cada servicio, espera a que termine (éxito o fracaso) y 4 s después pide el siguiente.
 WS_01 10
-WS_01 5
 WS_02 8
+WS_01 5
+WS_99 5
