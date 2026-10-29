@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WaterManagement · CENTRAL</title>
+<style>
+  :root {
+    --fondo: #0f172a; --panel: #1e293b; --borde: #334155; --texto: #e2e8f0; --suave: #94a3b8;
+    --verde: #16a34a; --verde-oscuro: #14532d; --rojo: #dc2626; --naranja: #ea580c; --gris: #64748b;
+    --acento: #0ea5e9;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "Segoe UI", sans-serif; background: var(--fondo); color: var(--texto); }
+  header { padding: 14px 20px; background: #075985; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline; }
+  header h1 { margin: 0; font-size: 18px; }
+  header small { color: #bae6fd; }
+  main { padding: 16px 20px; display: grid; gap: 16px; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--borde); border-radius: 8px; padding: 12px 14px; }
+  h2 { margin: 0 0 10px; font-size: 14px; color: #93c5fd; text-transform: uppercase; letter-spacing: .04em; }
+
+  .resumen { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .resumen span { padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+
+  .estaciones { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+  .ws { border-radius: 8px; padding: 10px 12px; cursor: pointer; color: #fff; border: 3px solid transparent; min-height: 118px; }
+  .ws.sel { border-color: #fff; }
+  .ws b { font-size: 16px; }
+  .ws .ubi { font-size: 12px; opacity: .9; }
+  .ws .est { font-weight: 700; margin: 6px 0 4px; font-size: 13px; }
+  .ws .dato { font-size: 12px; font-family: Consolas, monospace; }
+  .DISPONIBLE { background: var(--verde); }
+  .REGANDO { background: var(--verde); animation: parpadeo 1s steps(1, end) infinite; }
+  @keyframes parpadeo { 50% { background: var(--verde-oscuro); } }
+  .FUGA { background: var(--rojo); }
+  .FUERA_SERVICIO { background: var(--naranja); }
+  .DESCONECTADA { background: var(--gris); }
+
+  .ordenes { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  input, select { background: var(--fondo); color: var(--texto); border: 1px solid var(--borde); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  button { border: 0; border-radius: 6px; padding: 7px 12px; font: inherit; font-weight: 600; color: #fff; background: var(--acento); cursor: pointer; }
+  button.regar { background: var(--verde); } button.bloquear { background: var(--naranja); } button.activar { background: #2563eb; }
+  #aviso { font-size: 13px; color: var(--suave); min-height: 18px; margin-top: 8px; }
+
+  form { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  form input { flex: 1 1 100px; min-width: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td, th { text-align: left; padding: 3px 4px; border-bottom: 1px solid var(--borde); }
+  #registro { background: #020617; color: #7dd3fc; font: 12px/1.45 Consolas, monospace; height: 260px; overflow-y: auto; padding: 8px; border-radius: 6px; white-space: pre-wrap; margin: 0; }
+  .lateral { display: grid; gap: 16px; align-content: start; }
+  .ancho { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WaterManagement · Panel de CENTRAL</h1>
+  <small id="conexion">Conectando...</small>
+</header>
+<main>
+  <section>
+    <h2>Estaciones de riego</h2>
+    <div class="resumen" id="resumen"></div>
+    <div class="estaciones" id="estaciones"></div>
+
+    <div class="ordenes">
+      <label>Destino
+        <select id="destino"><option value="*">Todas las estaciones</option></select>
+      </label>
+      <label>Duración <input id="duracion" type="number" min="1" value="10" style="width:70px"> s</label>
+      <button class="regar" onclick="orden('REGAR')">Iniciar riego</button>
+      <button class="bloquear" onclick="orden('BLOQUEAR')">Bloquear</button>
+      <button class="activar" onclick="orden('ACTIVAR')">Activar</button>
+    </div>
+    <div id="aviso"></div>
+  </section>
+
+  <div class="lateral">
+    <section>
+      <h2>Alta de estación</h2>
+      <form onsubmit="return alta(event, '/api/estaciones', {id: 'ws-id', ubicacion: 'ws-ubi'})">
+        <input id="ws-id" placeholder="WS_05" required>
+        <input id="ws-ubi" placeholder="Ubicación" required>
+        <button>Alta</button>
+      </form>
+      <h2>Operarios</h2>
+      <form onsubmit="return alta(event, '/api/operarios', {id: 'op-id', nombre: 'op-nombre'})">
+        <input id="op-id" placeholder="OP_05" required>
+        <input id="op-nombre" placeholder="Nombre" required>
+        <button>Alta</button>
+      </form>
+      <table><tbody id="operarios"></tbody></table>
+    </section>
+    <section>
+      <h2>Últimos riegos (BD)</h2>
+      <table>
+        <thead><tr><th>Fin</th><th>WS</th><th>Operario</th><th>s</th><th>L</th><th>Motivo</th></tr></thead>
+        <tbody id="riegos"></tbody>
+      </table>
+    </section>
+  </div>
+
+  <section class="ancho">
+    <h2>Registro de eventos (sockets y Kafka)</h2>
+    <pre id="registro"></pre>
+  </section>
+</main>
+
+<script>
+const ETIQUETAS = {DISPONIBLE: 'Disponible', REGANDO: 'Regando', FUGA: 'Fuga',
+                   FUERA_SERVICIO: 'Fuera de Servicio', DESCONECTADA: 'Desconectada'};
+let seleccion = '*';
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+function tarjeta(ws) {
+  let detalle = '';
+  if (ws.estado === 'REGANDO') {
+    detalle = `<div class="dato">Caudal: ${ws.caudal} L/min</div>
+               <div class="dato">Volumen: ${ws.volumen} L</div>
+               <div class="dato">Tiempo: ${ws.segundos}/${ws.duracion} s</div>
+               <div class="dato">Operario: ${esc(ws.operario)}</div>`;
+  } else {
+    detalle = `<div class="dato">Caudal: 0 L/min</div>`;
+  }
+  return `<div class="ws ${ws.estado} ${ws.id === seleccion ? 'sel' : ''}" onclick="seleccionar('${esc(ws.id)}')">
+            <b>${esc(ws.id)}</b><div class="ubi">${esc(ws.ubicacion)}</div>
+            <div class="est">${ETIQUETAS[ws.estado]}</div>${detalle}</div>`;
+}
+
+function seleccionar(id) {
+  seleccion = seleccion === id ? '*' : id;
+  $('destino').value = seleccion;
+  refrescar();
+}
+
+async function refrescar() {
+  try {
+    const d = await (await fetch('/api/estado')).json();
+    $('conexion').textContent = `Sockets :${d.puerto_sockets} · Kafka ${d.kafka} · ${new Date().toLocaleTimeString()}`;
+
+    const cuenta = {};
+    d.estaciones.forEach(w => cuenta[w.estado] = (cuenta[w.estado] || 0) + 1);
+    $('resumen').innerHTML = Object.keys(ETIQUETAS)
+      .map(e => `<span class="${e}">${ETIQUETAS[e]}: ${cuenta[e] || 0}</span>`).join('');
+    $('estaciones').innerHTML = d.estaciones.map(tarjeta).join('') || '<i>No hay estaciones registradas</i>';
+
+    const opciones = ['<option value="*">Todas las estaciones</option>']
+      .concat(d.estaciones.map(w => `<option value="${esc(w.id)}">${esc(w.id)}</option>`));
+    if ($('destino').options.length !== opciones.length) $('destino').innerHTML = opciones.join('');
+    $('destino').value = seleccion;
+
+    $('operarios').innerHTML = d.operarios.map(o => `<tr><td>${esc(o.id)}</td><td>${esc(o.nombre)}</td></tr>`).join('');
+    $('riegos').innerHTML = d.riegos.map(r => `<tr><td>${r.fin.slice(11)}</td><td>${esc(r.ws_id)}</td>
+      <td>${esc(r.operator_id)}</td><td>${r.segundos}</td><td>${r.volumen_l}</td><td>${esc(r.motivo)}</td></tr>`).join('');
+
+    const reg = $('registro'), abajo = reg.scrollTop + reg.clientHeight >= reg.scrollHeight - 10;
+    reg.textContent = d.registro.join('\n');
+    if (abajo) reg.scrollTop = reg.scrollHeight;
+  } catch (e) {
+    $('conexion').textContent = 'Sin conexión con CENTRAL';
+  }
+}
+
+async function enviar(url, cuerpo) {
+  const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(cuerpo)});
+  $('aviso').textContent = (await r.json()).mensaje;
+  refrescar();
+}
+
+function orden(tipo) {
+  seleccion = $('destino').value;
+  enviar('/api/orden', {orden: tipo, ws_id: seleccion, duracion: Number($('duracion').value)});
+}
+
+function alta(ev, url, campos) {
+  ev.preventDefault();
+  const cuerpo = {};
+  for (const [clave, id] of Object.entries(campos)) { cuerpo[clave] = $(id).value; $(id).value = ''; }
+  enviar(url, cuerpo);
+  return false;
+}
+
+$('destino').onchange = () => { seleccion = $('destino').value; refrescar(); };
+refrescar();
+setInterval(refrescar, 1000);
+</script>
+</body>
+</html>
