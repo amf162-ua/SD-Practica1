@@ -85,8 +85,7 @@ class Central:
     # Envío de mensajes por Kafka
     # =========================================================================
     def publicar(self, topic, ws_id, mensaje):
-        if self.productor:
-            self.productor.send(topic, key=ws_id, value=mensaje)
+        K.publicar(self.productor, topic, ws_id, mensaje, self.log)
 
     def notificar(self, solicitud, subtipo, texto, **extra):
         """Informa al operario (y a la WS) de cada paso de su solicitud.

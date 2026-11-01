@@ -89,10 +89,17 @@ class Operario:
         self.decidida.clear()
         self.terminada.clear()
         log(f"[FO] Solicitando riego en {ws_id} durante {duracion} s...")
-        self.productor.send(K.TOPIC_SOLICITUDES, key=ws_id, value={
+        enviada = K.publicar(self.productor, K.TOPIC_SOLICITUDES, ws_id, {
             'order_id': self.orden['order_id'], 'operator_id': self.id,
-            'ws_id': ws_id, 'duracion': duracion, 'origen': 'FO'})
-        self.productor.flush()
+            'ws_id': ws_id, 'duracion': duracion, 'origen': 'FO'}, log)
+        if not enviada:
+            log("[FO] Solicitud no enviada: imposible conectar con Kafka. Inténtalo más tarde.")
+            self.orden = None
+            return
+        try:
+            self.productor.flush(timeout=5)
+        except Exception:
+            pass   # si no se confirma, el timeout de abajo avisará de que CENTRAL no responde
 
         # Primero esperamos a que CENTRAL decida y luego a que termine el riego
         if not self.decidida.wait(TIMEOUT_AUTORIZACION):

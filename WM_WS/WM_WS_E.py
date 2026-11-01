@@ -64,8 +64,8 @@ class Engine:
         return E.REGANDO if self.riego else E.DISPONIBLE
 
     def publicar(self, topic, mensaje):
-        if self.productor and self.ws_id:
-            self.productor.send(topic, key=self.ws_id, value={'ws_id': self.ws_id, **mensaje})
+        if self.ws_id:
+            K.publicar(self.productor, topic, self.ws_id, {'ws_id': self.ws_id, **mensaje}, log)
 
     # -- Conexión con el Monitor (sockets) --------------------------------------
     def bucle_monitor(self):
