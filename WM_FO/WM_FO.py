@@ -23,6 +23,8 @@ from common import kafka_utils as K   # noqa: E402
 TIMEOUT_AUTORIZACION = 15   # s esperando a que CENTRAL autorice o deniegue
 MARGEN_FIN = 15             # s extra sobre la duración esperando el resumen final
 PAUSA_ENTRE_SERVICIOS = 4
+# CENTRAL publica el estado de la red cada 2 s: si en 6 s (3 latidos) no llega nada, está caída
+TIMEOUT_CENTRAL = 6
 
 MENU = """
 === OPERARIO {id} ===
@@ -45,11 +47,33 @@ class Operario:
         self.orden = None             # solicitud en curso: {'order_id', 'ws_id'}
         self.decidida = threading.Event()    # CENTRAL ha autorizado o denegado
         self.terminada = threading.Event()
+        # Vigilancia de CENTRAL: se empieza suponiendo que está activa (si no, en 6 s se avisa)
+        self.central_activa = True
+        self.ultima_noticia_central = time.time()
 
         self.productor = K.crear_productor(servidor_kafka, log)
         listo = threading.Event()
         threading.Thread(target=self.bucle_kafka, args=(listo,), daemon=True).start()
         listo.wait()
+        threading.Thread(target=self.vigilar_central, daemon=True).start()
+
+    # -- ¿Sigue viva CENTRAL? ---------------------------------------------------
+    def _noticia_de_central(self):
+        """Llamado con cada mensaje nuevo de CENTRAL (su estado de la red llega cada 2 s)."""
+        self.ultima_noticia_central = time.time()
+        if not self.central_activa:
+            self.central_activa = True
+            log("[FO] Conexión con WM_Central restablecida. Ya se pueden pedir riegos.")
+
+    def vigilar_central(self):
+        """Hilo que avisa (una sola vez) cuando CENTRAL deja de dar señales de vida."""
+        while True:
+            time.sleep(1)
+            sin_noticias = time.time() - self.ultima_noticia_central
+            if self.central_activa and sin_noticias > TIMEOUT_CENTRAL:
+                self.central_activa = False
+                log(f"[FO] Imposible conectar con WM_Central: no da señales de vida desde hace "
+                    f"{sin_noticias:.0f} s. No se pueden pedir riegos hasta que vuelva.")
 
     def bucle_kafka(self, listo):
         topics = [K.TOPIC_CENTRAL, K.TOPIC_TELEMETRIA]
@@ -58,10 +82,14 @@ class Operario:
         # dos apps en el mismo grupo se repartirían los mensajes y una no recibiría nada.
         # En Docker el nombre de máquina es el ID del contenedor (no cambia con stop/start).
         grupo = f'fo-{self.id}-{socket.gethostname()}'
-        for topic, msg, _ in K.escuchar(self.servidor_kafka, topics, grupo, log, listo):
+        for topic, msg, atrasado in K.escuchar(self.servidor_kafka, topics, grupo, log, listo):
             orden = self.orden
             de_mi_orden = orden is not None and msg.get('order_id') == orden['order_id']
             if topic == K.TOPIC_CENTRAL:
+                # Un mensaje atrasado (publicado con la app cerrada) no demuestra que CENTRAL
+                # siga viva ahora: solo cuentan los nuevos
+                if not atrasado:
+                    self._noticia_de_central()
                 # Las ORDEN van dirigidas a los Engines: el operario las ignora
                 if msg.get('tipo') == K.TIPO_ESTADO_RED:
                     self.estaciones = msg.get('estaciones', [])
@@ -104,6 +132,11 @@ class Operario:
 
     def solicitar(self, ws_id, duracion):
         """Envía una solicitud y espera a que termine (denegada o resumen final)."""
+        if not self.central_activa:
+            # Con CENTRAL caída no se admiten peticiones (guía de corrección): ni se envía
+            log(f"[FO] Solicitud no enviada ({ws_id}): imposible conectar con WM_Central. "
+                f"Inténtalo cuando vuelva.")
+            return
         self.orden = {'order_id': K.nuevo_id('ORD'), 'ws_id': ws_id}
         self.decidida.clear()
         self.terminada.clear()
@@ -128,6 +161,9 @@ class Operario:
         self.orden = None
 
     def ver_estaciones(self):
+        if not self.central_activa:
+            print(f"  ¡ATENCIÓN! Imposible conectar con WM_Central: estos datos son de hace "
+                  f"{time.time() - self.ultima_noticia_central:.0f} s")
         if not self.estaciones:
             print("  (aún no se ha recibido el estado de la red desde CENTRAL)")
         else:
