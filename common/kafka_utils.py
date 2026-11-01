@@ -29,7 +29,7 @@ import uuid
 import warnings
 
 warnings.filterwarnings('ignore', category=DeprecationWarning)
-from kafka import KafkaConsumer, KafkaProducer  # noqa: E402
+from kafka import KafkaConsumer, KafkaProducer, TopicPartition
 
 TOPIC_SOLICITUDES = 'wm-solicitudes'
 TOPIC_CENTRAL = 'wm-central'
@@ -46,6 +46,9 @@ MAX_BLOQUEO_MS = 2000   # máximo que un send() puede quedarse esperando al brok
 # La librería espera hasta 30 s entre reintentos de reconexión; lo limitamos a REINTENTO
 # para que, cuando el broker vuelva, todo se recupere en pocos segundos
 MAX_ESPERA_RECONEXION_MS = REINTENTO * 1000
+# Si un consumidor de un grupo fijo muere sin despedirse, Kafka espera este tiempo antes
+# de darlo por muerto y entregar los mensajes a su sustituto (por defecto son 45 s)
+SESION_MS = 6000
 
 
 def bootstrap(ip: str, puerto) -> str:
@@ -106,6 +109,19 @@ def _poll(consumidor, timeout_ms):
     return [msg for registros in consumidor.poll(timeout_ms=timeout_ms).values() for msg in registros]
 
 
+def _fin_de_topics(consumidor, topics: list) -> dict:
+    """
+    Offset en el que termina ahora mismo cada partición de los topics.
+    Todo mensaje con un offset menor ya estaba publicado antes de arrancar el consumidor.
+    """
+    try:
+        particiones = [TopicPartition(t, p) for t in topics
+                       for p in (consumidor.partitions_for_topic(t) or [])]
+        return {(tp.topic, tp.partition): fin for tp, fin in consumidor.end_offsets(particiones).items()}
+    except Exception:
+        return {}   # sin esta información, ningún mensaje se considera atrasado
+
+
 def _broker_accesible(servidor: str) -> bool:
     """¿Acepta conexiones el broker? (abre y cierra una conexión TCP a host:puerto)."""
     host, puerto = servidor.rsplit(':', 1)
@@ -118,9 +134,14 @@ def _broker_accesible(servidor: str) -> bool:
 
 def escuchar(servidor: str, topics: list, grupo: str, log=print, listo=None):
     """
-    Generador que devuelve (topic, valor) de los mensajes nuevos de los topics.
+    Generador que devuelve (topic, valor, atrasado) de los mensajes de los topics.
     'listo' (threading.Event opcional) se activa cuando el consumidor ya tiene
     particiones asignadas: a partir de ese momento no se pierde ningún mensaje.
+
+    El grupo decide desde dónde se lee:
+      - Grupo nuevo (nuevo_id): solo los mensajes que se publiquen a partir de ahora.
+      - Grupo fijo: Kafka recuerda por dónde iba el grupo y entrega también lo que se
+        publicó mientras el módulo estaba apagado. Esos mensajes llegan con atrasado=True.
 
     Si el broker se cae, el generador no termina ni lanza excepciones: sigue intentándolo
     con el mismo consumidor y, cuando el broker vuelve, continúa desde donde lo dejó.
@@ -132,7 +153,10 @@ def escuchar(servidor: str, topics: list, grupo: str, log=print, listo=None):
         try:
             consumidor = KafkaConsumer(*topics, bootstrap_servers=servidor, group_id=grupo,
                                        value_deserializer=_de_json, auto_offset_reset='latest',
-                                       reconnect_backoff_max_ms=MAX_ESPERA_RECONEXION_MS)
+                                       reconnect_backoff_max_ms=MAX_ESPERA_RECONEXION_MS,
+                                       session_timeout_ms=SESION_MS, heartbeat_interval_ms=2000)
+            # Se calcula ANTES del primer poll: marca qué mensajes estaban ya publicados
+            fin_inicial = _fin_de_topics(consumidor, topics)
             break
         except Exception as e:
             log(f"[KAFKA] No se pudo suscribir ({type(e).__name__}). Reintento en {REINTENTO}s...")
@@ -170,4 +194,5 @@ def escuchar(servidor: str, topics: list, grupo: str, log=print, listo=None):
 
         for msg in mensajes:
             if msg.value is not None:
-                yield msg.topic, msg.value
+                atrasado = msg.offset < fin_inicial.get((msg.topic, msg.partition), 0)
+                yield msg.topic, msg.value, atrasado

@@ -11,6 +11,7 @@ Uso:  python WM_FO.py <ip_broker> <puerto_broker> <id_operador> [<fichero_servic
 """
 
 import os
+import socket
 import sys
 import threading
 import time
@@ -52,7 +53,12 @@ class Operario:
 
     def bucle_kafka(self, listo):
         topics = [K.TOPIC_CENTRAL, K.TOPIC_TELEMETRIA]
-        for topic, msg in K.escuchar(self.servidor_kafka, topics, K.nuevo_id(f'fo-{self.id}'), log, listo):
+        # Grupo FIJO por operario y máquina: si la app se cierra, al volver a abrirla Kafka le
+        # entrega lo que se perdió. La máquina va en el nombre porque, con una sola partición,
+        # dos apps en el mismo grupo se repartirían los mensajes y una no recibiría nada.
+        # En Docker el nombre de máquina es el ID del contenedor (no cambia con stop/start).
+        grupo = f'fo-{self.id}-{socket.gethostname()}'
+        for topic, msg, _ in K.escuchar(self.servidor_kafka, topics, grupo, log, listo):
             orden = self.orden
             de_mi_orden = orden is not None and msg.get('order_id') == orden['order_id']
             if topic == K.TOPIC_CENTRAL:
@@ -62,6 +68,11 @@ class Operario:
                     self.ultimos_riegos = msg.get('ultimos_riegos', [])
                 elif msg.get('tipo') == K.TIPO_NOTIFICACION and de_mi_orden:
                     self._notificacion(msg)
+                elif (msg.get('tipo') == K.TIPO_NOTIFICACION and msg.get('subtipo') == 'RESUMEN'
+                      and msg.get('operator_id') == self.id):
+                    # Resumen de un servicio mío que no es el que espero ahora: terminó
+                    # mientras la app estaba cerrada (o antes de reabrirla)
+                    self._resumen_anterior(msg)
             elif topic == K.TOPIC_TELEMETRIA and de_mi_orden:
                 log(f"  [{msg['ws_id']}] {msg['segundos']} s | caudal {msg['caudal']} L/min | "
                     f"acumulado {msg['volumen']} L")
@@ -82,6 +93,14 @@ class Operario:
                 self.decidida.set()
             if tipo == 'DENEGADA':
                 self.terminada.set()
+
+    @staticmethod
+    def _resumen_anterior(msg):
+        print(f"\n  ==== RESULTADO DE UN SERVICIO ANTERIOR ({msg['ws_id']}) ====\n"
+              f"  Motivo de fin : {msg['motivo']}\n"
+              f"  Duración      : {msg['segundos']} s\n"
+              f"  Volumen total : {msg['volumen']} L\n"
+              f"  ==================================================\n", flush=True)
 
     def solicitar(self, ws_id, duracion):
         """Envía una solicitud y espera a que termine (denegada o resumen final)."""

@@ -116,13 +116,26 @@ class BaseDatos:
             self.conn.execute('INSERT OR REPLACE INTO operarios VALUES (?, ?)', (operator_id, nombre))
 
     # -- Riegos -----------------------------------------------------------------
-    def guardar_riego(self, order_id, ws_id, operator_id, segundos, volumen_l, motivo):
+    def existe_riego(self, order_id: str) -> bool:
+        with self.lock:
+            return self.conn.execute('SELECT 1 FROM riegos WHERE order_id = ?', (order_id,)).fetchone() is not None
+
+    def guardar_riego(self, order_id, ws_id, operator_id, segundos, volumen_l, motivo) -> bool:
+        """
+        Guarda un riego terminado. Si ese order_id ya estaba guardado no lo duplica y devuelve
+        False: el mismo fin de riego puede llegar dos veces (p. ej. tras reiniciarse CENTRAL).
+        """
         with self.lock, self.conn:
+            # La comprobación va dentro del mismo 'with self.lock': no se llama a existe_riego()
+            # porque threading.Lock no es reentrante y el hilo se bloquearía a sí mismo
+            if self.conn.execute('SELECT 1 FROM riegos WHERE order_id = ?', (order_id,)).fetchone():
+                return False
             self.conn.execute('''
                 INSERT INTO riegos (order_id, ws_id, operator_id, fin, segundos, volumen_l, motivo)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (order_id, ws_id, operator_id, time.strftime('%Y-%m-%d %H:%M:%S'),
                   segundos, volumen_l, motivo))
+            return True
 
     def ultimos_riegos(self, limite: int = 10) -> list:
         with self.lock:

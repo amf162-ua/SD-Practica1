@@ -104,10 +104,12 @@ class Engine:
         self.id_asignado.wait()
         self.productor = K.crear_productor(self.servidor_kafka, log)
         listo = threading.Event()
+        # Grupo NUEVO en cada arranque, a propósito: un Engine que se reinicia no debe
+        # ejecutar órdenes viejas (un REGAR antiguo empezaría un riego que nadie espera)
         mensajes = K.escuchar(self.servidor_kafka, [K.TOPIC_CENTRAL],
                               K.nuevo_id(f'engine-{self.ws_id}'), log, listo)
         threading.Thread(target=self._anunciar, args=(listo,), daemon=True).start()
-        for _, msg in mensajes:
+        for _, msg, _ in mensajes:
             # Solo nos interesan las órdenes y notificaciones de esta estación (no ESTADO_RED)
             if msg.get('ws_id') != self.ws_id:
                 continue
@@ -175,15 +177,20 @@ class Engine:
             segundos += 1
             caudal = round(CAUDAL_NOMINAL + random.uniform(-0.5, 0.5), 2)   # lectura del caudalímetro
             volumen = round(volumen + caudal / 60, 2)
+            # operario y duración: así CENTRAL puede recuperar el riego si se reinicia en medio
             self.publicar(K.TOPIC_TELEMETRIA, {'order_id': riego['order_id'], 'caudal': caudal,
-                                                'volumen': volumen, 'segundos': segundos})
+                                                'volumen': volumen, 'segundos': segundos,
+                                                'operator_id': riego['operator_id'],
+                                                'duracion': riego['duracion']})
             log(f"[ENGINE] Regando {segundos}/{riego['duracion']} s | {caudal} L/min | {volumen} L")
 
         with self.lock:
             motivo = self.motivo_parada or E.FIN_COMPLETADO
             self.riego, self.motivo_parada = None, None
         log(f"[ENGINE] <<< ELECTROVÁLVULA CERRADA ({motivo}): {volumen} L en {segundos} s")
+        # operator_id: si CENTRAL estaba caída, lo necesita para registrar el riego y avisar al operario
         self.publicar(K.TOPIC_EVENTOS_WS, {'evento': 'RIEGO_FINALIZADO', 'order_id': riego['order_id'],
+                                            'operator_id': riego['operator_id'],
                                             'motivo': motivo, 'segundos': segundos, 'volumen': volumen})
 
     # -- Menú de la estación ----------------------------------------------------

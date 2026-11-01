@@ -29,6 +29,7 @@ from panel_web import iniciar_panel                                 # noqa: E402
 TIMEOUT_MONITOR = 6          # s sin noticias del Monitor -> WS DESCONECTADA
 TIMEOUT_AUTORIZACION = 5     # s que esperamos a que el Engine abra la electroválvula
 DURACION_MAXIMA = 3600
+GRUPO_KAFKA = 'wm-central'   # fijo: Kafka recuerda por dónde iba CENTRAL entre reinicios
 
 
 class Estacion:
@@ -175,35 +176,62 @@ class Central:
                     self.notificar(sol, 'DENEGADA', f"La estación rechazó el riego: {ev.get('motivo')}")
 
             elif tipo == 'RIEGO_FINALIZADO':
+                segundos, volumen = ev.get('segundos', 0), ev.get('volumen', 0.0)
                 if ws.riego and ws.riego['order_id'] == ev.get('order_id'):
-                    self._finalizar_riego(ws, ev.get('motivo'), ev.get('segundos', 0), ev.get('volumen', 0.0))
+                    self._finalizar_riego(ws, ev.get('motivo'), segundos, volumen)
+                elif ev.get('operator_id'):
+                    # Riego que CENTRAL no tiene en memoria: terminó mientras estaba caída o se
+                    # reinició en medio. Se registra igual (si ya estaba en la BD, no se duplica)
+                    self._registrar_riego(ws.id, ev['order_id'], ev['operator_id'],
+                                          ev.get('motivo'), segundos, volumen)
 
-    def procesar_telemetria(self, t):
+    def procesar_telemetria(self, t, atrasado=False):
         with self.lock:
             ws = self.estaciones.get(t.get('ws_id'))
-            if ws and ws.riego and ws.riego['order_id'] == t.get('order_id'):
+            if ws is None:
+                return
+            if (ws.riego is None and not ws.pendiente and not atrasado and t.get('operator_id')
+                    and not self.bd.existe_riego(t['order_id'])):
+                # CENTRAL se ha reiniciado en mitad de este riego: lo "adopta" para mostrarlo en
+                # el panel y para no autorizar otro riego en esta estación mientras tanto
+                ws.riego = {'order_id': t['order_id'], 'operator_id': t['operator_id'],
+                            'duracion': t.get('duracion', 0)}
+                self.log(f"[{ws.id}] Riego en curso recuperado tras el reinicio de CENTRAL "
+                         f"(operario {t['operator_id']})")
+            if ws.riego and ws.riego['order_id'] == t.get('order_id'):
                 ws.riego.update(caudal=t['caudal'], volumen=t['volumen'], segundos=t['segundos'])
 
     def _finalizar_riego(self, ws, motivo, segundos, volumen):
-        """Cierra el riego en curso, lo guarda en la BD y envía el resumen al operario."""
+        """Cierra el riego en curso de la WS y lo registra."""
         riego, ws.riego = ws.riego, None
-        self.bd.guardar_riego(riego['order_id'], ws.id, riego['operator_id'], segundos, volumen, motivo)
-        sol = {'order_id': riego['order_id'], 'operator_id': riego['operator_id'], 'ws_id': ws.id}
+        self._registrar_riego(ws.id, riego['order_id'], riego['operator_id'], motivo, segundos, volumen)
+
+    def _registrar_riego(self, ws_id, order_id, operator_id, motivo, segundos, volumen):
+        """Guarda el riego en la BD y envía el resumen al operario (solo la primera vez)."""
+        if not self.bd.guardar_riego(order_id, ws_id, operator_id, segundos, volumen, motivo):
+            self.log(f"[{ws_id}] Fin de riego {order_id} repetido: ya estaba registrado")
+            return
+        sol = {'order_id': order_id, 'operator_id': operator_id, 'ws_id': ws_id}
         self.notificar(sol, 'RESUMEN', f'Riego finalizado ({motivo}): {volumen} L en {segundos} s',
                        motivo=motivo, segundos=segundos, volumen=volumen)
 
     def bucle_kafka(self):
         self.productor = K.crear_productor(self.servidor_kafka, self.log)
         topics = [K.TOPIC_SOLICITUDES, K.TOPIC_EVENTOS_WS, K.TOPIC_TELEMETRIA]
-        # Grupo nuevo en cada arranque: no se reprocesan solicitudes antiguas tras un reinicio
-        for topic, msg in K.escuchar(self.servidor_kafka, topics, K.nuevo_id('central'), self.log):
+        # Grupo FIJO: al reiniciarse, Kafka le entrega lo que se publicó mientras estaba caída
+        for topic, msg, atrasado in K.escuchar(self.servidor_kafka, topics, GRUPO_KAFKA, self.log):
             try:
                 if topic == K.TOPIC_SOLICITUDES:
-                    self.procesar_solicitud(msg)
+                    if atrasado:
+                        # Se pidió con CENTRAL caída: quien la pidió ya dejó de esperar
+                        self.log(f"[KAFKA] Solicitud descartada ({msg.get('operator_id')} -> "
+                                 f"{msg.get('ws_id')}): se hizo mientras CENTRAL estaba caída")
+                    else:
+                        self.procesar_solicitud(msg)
                 elif topic == K.TOPIC_EVENTOS_WS:
                     self.procesar_evento(msg)
                 elif topic == K.TOPIC_TELEMETRIA:
-                    self.procesar_telemetria(msg)
+                    self.procesar_telemetria(msg, atrasado)
             except Exception as e:  # un mensaje mal formado no debe tumbar CENTRAL
                 self.log(f"[KAFKA] Mensaje ignorado en {topic} ({e}): {msg}")
 
