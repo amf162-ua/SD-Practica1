@@ -22,6 +22,10 @@ x-engine: &engine
   <<: *ws
   stdin_open: true
   tty: true
+  # Aquí guarda el Engine el riego en curso (riego_en_curso_<WS>.json) para no perderlo si se
+  # cae; en un volumen sobrevive incluso a 'docker compose down' (cada WS usa su propio fichero)
+  volumes:
+    - engine-datos:/app/WM_WS/datos
 
 services:
   ws1-monitor:
@@ -41,3 +45,6 @@ services:
     <<: *engine
     container_name: ws2-engine
     command: python -u WM_WS/WM_WS_E.py ${KAFKA_HOST} ${KAFKA_PORT} ws2-monitor 6000
+
+volumes:
+  engine-datos:

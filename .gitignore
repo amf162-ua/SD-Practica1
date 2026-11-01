@@ -23,3 +23,6 @@ env/
 *.env
 # Datos de CENTRAL en ejecución local
 WM_Central/data/
+
+# Riego en curso que guarda el Engine al ejecutarse fuera de Docker
+WM_WS/datos/

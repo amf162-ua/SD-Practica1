@@ -177,7 +177,10 @@ class Central:
 
             elif tipo == 'RIEGO_FINALIZADO':
                 segundos, volumen = ev.get('segundos', 0), ev.get('volumen', 0.0)
-                if ws.riego and ws.riego['order_id'] == ev.get('order_id'):
+                if ev.get('recuperado'):
+                    # El Engine se cayó en mitad del riego y, al volver, envía su estado final
+                    self._riego_recuperado(ws.id, ev, segundos, volumen)
+                elif ws.riego and ws.riego['order_id'] == ev.get('order_id'):
                     self._finalizar_riego(ws, ev.get('motivo'), segundos, volumen)
                 elif ev.get('operator_id'):
                     # Riego que CENTRAL no tiene en memoria: terminó mientras estaba caída o se
@@ -205,6 +208,21 @@ class Central:
         """Cierra el riego en curso de la WS y lo registra."""
         riego, ws.riego = ws.riego, None
         self._registrar_riego(ws.id, riego['order_id'], riego['operator_id'], motivo, segundos, volumen)
+
+    def _riego_recuperado(self, ws_id, ev, segundos, volumen):
+        """
+        Estado final que envía un Engine al recuperarse de una caída a mitad de riego.
+        Normalmente CENTRAL ya cerró ese riego con la última telemetría (al detectar la avería):
+        se corrige con los datos reales de la estación. Si no lo tenía, se registra sin más.
+        """
+        order_id, operator_id = ev['order_id'], ev['operator_id']
+        if not self.bd.actualizar_riego(order_id, segundos, volumen, E.FIN_AVERIA):
+            self._registrar_riego(ws_id, order_id, operator_id, E.FIN_AVERIA, segundos, volumen)
+            return
+        sol = {'order_id': order_id, 'operator_id': operator_id, 'ws_id': ws_id}
+        self.notificar(sol, 'RESUMEN', f'Estado final enviado por la estación tras recuperarse de la '
+                                       f'avería: {volumen} L en {segundos} s',
+                       motivo=E.FIN_AVERIA, segundos=segundos, volumen=volumen)
 
     def _registrar_riego(self, ws_id, order_id, operator_id, motivo, segundos, volumen):
         """Guarda el riego en la BD y envía el resumen al operario (solo la primera vez)."""

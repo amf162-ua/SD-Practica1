@@ -11,6 +11,7 @@ Uso:  python WM_WS_E.py <ip_broker> <puerto_broker> <ip_monitor> <puerto_monitor
   - Si el Monitor se cae, la estación pasa a AVERIADA y no admite más riegos ni manualmente.
 """
 
+import json
 import os
 import random
 import socket
@@ -25,6 +26,8 @@ from common import kafka_utils as K                                     # noqa: 
 from common.protocolo import CanalTramas, ErrorProtocolo, STX, construir, separar  # noqa: E402
 
 CAUDAL_NOMINAL = 15.0    # L/min
+# Carpeta donde se guarda el riego en curso, para no perderlo si el Engine se cae
+DIR_DATOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'datos')
 
 MENU = """
   r <seg>  Solicitar riego manual en esta estación (p.ej. 'r 10')
@@ -121,6 +124,40 @@ class Engine:
     def _anunciar(self, listo):
         listo.wait()
         self.publicar(K.TOPIC_EVENTOS_WS, {'evento': 'ENGINE_LISTO'})
+        self._enviar_riego_interrumpido()
+
+    # -- Riego interrumpido por una caída del Engine -----------------------------
+    def _fichero_riego(self):
+        return os.path.join(DIR_DATOS, f'riego_en_curso_{self.ws_id}.json')
+
+    def _guardar_progreso(self, riego, segundos, volumen):
+        """Guarda en disco cómo va el riego (cada segundo). Si el Engine muere, queda ahí."""
+        os.makedirs(DIR_DATOS, exist_ok=True)
+        temporal = self._fichero_riego() + '.tmp'
+        with open(temporal, 'w', encoding='utf-8') as f:
+            json.dump({**riego, 'segundos': segundos, 'volumen': volumen}, f)
+        os.replace(temporal, self._fichero_riego())   # cambio atómico: nunca queda a medias
+
+    def _borrar_progreso(self):
+        try:
+            os.remove(self._fichero_riego())
+        except FileNotFoundError:
+            pass
+
+    def _enviar_riego_interrumpido(self):
+        """Al arrancar: si hay un riego guardado, el Engine se cayó en medio. Se envía su estado final."""
+        try:
+            with open(self._fichero_riego(), encoding='utf-8') as f:
+                riego = json.load(f)
+        except (FileNotFoundError, ValueError):
+            return
+        log(f"[ENGINE] Riego interrumpido por una caída del Engine: {riego['volumen']} L en "
+            f"{riego['segundos']} s. Enviando su estado final a CENTRAL")
+        self.publicar(K.TOPIC_EVENTOS_WS, {'evento': 'RIEGO_FINALIZADO', 'order_id': riego['order_id'],
+                                            'operator_id': riego['operator_id'], 'motivo': E.FIN_AVERIA,
+                                            'segundos': riego['segundos'], 'volumen': riego['volumen'],
+                                            'recuperado': True})
+        self._borrar_progreso()
 
     def atender_orden(self, orden):
         tipo = orden.get('orden')
@@ -183,6 +220,7 @@ class Engine:
                                                 'operator_id': riego['operator_id'],
                                                 'duracion': riego['duracion']})
             log(f"[ENGINE] Regando {segundos}/{riego['duracion']} s | {caudal} L/min | {volumen} L")
+            self._guardar_progreso(riego, segundos, volumen)
 
         with self.lock:
             motivo = self.motivo_parada or E.FIN_COMPLETADO
@@ -192,6 +230,7 @@ class Engine:
         self.publicar(K.TOPIC_EVENTOS_WS, {'evento': 'RIEGO_FINALIZADO', 'order_id': riego['order_id'],
                                             'operator_id': riego['operator_id'],
                                             'motivo': motivo, 'segundos': segundos, 'volumen': volumen})
+        self._borrar_progreso()   # el riego terminó con normalidad: ya no hay nada que recuperar
 
     # -- Menú de la estación ----------------------------------------------------
     def bucle_menu(self):

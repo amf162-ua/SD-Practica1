@@ -137,6 +137,14 @@ class BaseDatos:
                   segundos, volumen_l, motivo))
             return True
 
+    def actualizar_riego(self, order_id, segundos, volumen_l, motivo) -> bool:
+        """Corrige un riego ya guardado con los datos reales. False si ese riego no estaba guardado."""
+        with self.lock, self.conn:
+            cursor = self.conn.execute('''
+                UPDATE riegos SET segundos = ?, volumen_l = ?, motivo = ? WHERE order_id = ?
+            ''', (segundos, volumen_l, motivo, order_id))
+            return cursor.rowcount > 0
+
     def ultimos_riegos(self, limite: int = 10) -> list:
         with self.lock:
             filas = self.conn.execute('''

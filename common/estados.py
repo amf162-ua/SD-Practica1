@@ -17,3 +17,4 @@ FIN_PARADA_CENTRAL = 'PARADA_CENTRAL'
 FIN_BLOQUEO = 'BLOQUEO_CENTRAL'
 FIN_FUGA = 'FUGA'
 FIN_DESCONEXION = 'DESCONEXION'
+FIN_AVERIA = 'AVERIA'              # El Engine se cayó a mitad de riego (lo informa al recuperarse)
