@@ -7,7 +7,8 @@ para la persistencia y **Docker** para desplegar todos los módulos.
 Despliegue: **AWS (EC2 del Learner Lab)** para CENTRAL + BD + Kafka, y PCs del laboratorio para
 las estaciones (WS) y los operarios (FO). Se usa AWS porque Railway no admite registros nuevos.
 
-> 📘 **[GUIA.md](GUIA.md)**: explicación del código, puesta en marcha en un solo PC y batería de pruebas completa.
+> 📘 **[GUIA.md](GUIA.md)**: cómo funciona el sistema, por qué está hecho así y qué pasa si cae cada pieza.
+> 🚀 **[DESPLIEGUE.md](DESPLIEGUE.md)**: pasos del despliegue y guion de la demostración para la revisión.
 
 ---
 
